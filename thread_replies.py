@@ -48,8 +48,10 @@ def process_posts(posts):
 			parent_cid = post['reply']['parent']['cid']
 			if parent_cid in posts_by_cid:
 				posts_by_cid[parent_cid]['replies'].append(post)
+			else:
+				post['external_reply'] = 1
 
-	root_posts = [post for post in posts if 'reply' not in post or 'parent' not in post['reply']]
+	root_posts = [post for post in posts if ('reply' not in post or 'parent' not in post['reply']) or ('reply' in post and 'parent' in post['reply'] and post['reply']['parent']['cid'] not in posts_by_cid)]
 	return root_posts
 
 def print_posts(posts):
@@ -76,7 +78,7 @@ def print_posts(posts):
 			print_post(reply, depth + 1)
 
 	for post in posts:
-		print_post(post)
+		print_post(post, post.get('external_reply', 0))
 
 filename = sys.argv[1]
 data = read_json(filename)
