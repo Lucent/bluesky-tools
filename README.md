@@ -1,11 +1,11 @@
 # Bluesky Tools
 
-Utilities for downloading and exploring Bluesky accounts via GOAT.
+Utilities for downloading and exploring Bluesky accounts via goat.
 
 ## Usage
 
 - `./install.sh`
-  Installs the [GOAT](https://github.com/ronilaukkarinen/goat) repo-fetching tool.
+  Installs the [goat](https://github.com/bluesky-social/indigo/blob/main/cmd/goat/README.md) repo-fetching tool.
 
 - `./fetch.sh username.bsky.social`
   Fetches the given account's `.car` archive, then:
