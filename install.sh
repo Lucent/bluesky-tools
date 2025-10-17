@@ -1,1 +1,1 @@
-go install github.com/bluesky-social/indigo/cmd/goat@latest
+go install github.com/bluesky-social/goat@latest
