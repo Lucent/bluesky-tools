@@ -18,7 +18,7 @@ def transform_text_to_markdown(text, facets):
 		text = text[:start] + markdown_link + text[end:]
 	return text
 
-def read_posts_from_directory(directory):
+def read_posts_from_directory(directory, limit=None):
 	posts = []
 	for root, _, files in os.walk(directory):
 		for file in files:
@@ -28,6 +28,8 @@ def read_posts_from_directory(directory):
 			post['rkey'] = rkey
 			posts.append(post)
 	posts.sort(key=lambda x: x['createdAt'])
+	if limit and len(posts) > limit:
+		posts = posts[-limit:]
 	return posts
 
 def process_posts(posts):
@@ -129,7 +131,8 @@ def print_posts(posts):
 		print_post(post, post.get('external_reply', 0))
 
 directory = sys.argv[1]
-posts = read_posts_from_directory(os.path.join(directory, "app.bsky.feed.post"))
+limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+posts = read_posts_from_directory(os.path.join(directory, "app.bsky.feed.post"), limit)
 
 root_posts = process_posts(posts)
 
