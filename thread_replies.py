@@ -8,14 +8,13 @@ def read_json(filename):
 
 def transform_text_to_markdown(text, facets):
 	for facet in reversed(facets):
-		if facet['features'][0]['$type'] == "app.bsky.richtext.facet#mention":
+		if facet['features'][0]['$type'] != "app.bsky.richtext.facet#link":
 			continue
 		start = facet['index']['byteStart']
 		end = facet['index']['byteEnd']
 		link = facet['features'][0]['uri']
 		link_text = text[start:end]
-		markdown_link = f"[{link_text}]({link})"
-		text = text[:start] + markdown_link + text[end:]
+		text = text[:start] + f"[{link_text}]({link})" + text[end:]
 	return text
 
 def read_posts_from_directory(directory, limit=None):
@@ -38,8 +37,7 @@ def process_posts(posts):
 	for post in posts:
 		post['replies'] = []
 		if 'facets' in post:
-			post['text'] = post['text']
-			# post['text'] = transform_text_to_markdown(post['text'], post['facets'])
+			post['text'] = transform_text_to_markdown(post['text'], post['facets'])
 
 		if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.images":
 			images_text = '\n'.join([f"[{image['alt']}]" for image in post['embed']['images']])
@@ -55,6 +53,22 @@ def process_posts(posts):
 				quoted_post = posts_by_rkey[quoted_rkey]
 				date = quoted_post['createdAt'].split('T')[0]
 				# Store raw quoted text
+				post['quotedText'] = quoted_post['text']
+				post['quotedDate'] = date
+
+		if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.recordWithMedia":
+			media = post['embed']['media']
+			if media['$type'] == "app.bsky.embed.images":
+				images_text = '\n'.join([f"[{image['alt']}]" for image in media['images']])
+				post['text'] += f"\n{images_text}"
+			elif media['$type'] == "app.bsky.embed.external":
+				embed = media['external']
+				post['text'] += f"\n[{embed['title']}]({embed['uri']})"
+
+			quoted_rkey = post['embed']['record']['record']['uri'].split('/')[-1]
+			if quoted_rkey in posts_by_rkey:
+				quoted_post = posts_by_rkey[quoted_rkey]
+				date = quoted_post['createdAt'].split('T')[0]
 				post['quotedText'] = quoted_post['text']
 				post['quotedDate'] = date
 
@@ -82,8 +96,10 @@ def process_posts(posts):
 			quoted_rkey = None
 			if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.record":
 				quoted_rkey = post['embed']['record']['uri'].split('/')[-1]
-				if quoted_rkey in posts_by_rkey:
-					quoted_posts.add(quoted_rkey)
+			elif 'embed' in post and post['embed']['$type'] == "app.bsky.embed.recordWithMedia":
+				quoted_rkey = post['embed']['record']['record']['uri'].split('/')[-1]
+			if quoted_rkey and quoted_rkey in posts_by_rkey:
+				quoted_posts.add(quoted_rkey)
 
 	# Root posts are those that aren't replies to internal posts
 	# Also exclude posts that are quoted elsewhere but have no replies (to avoid duplication)
