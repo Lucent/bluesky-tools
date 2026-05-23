@@ -4,6 +4,12 @@ Utilities for downloading and exploring Bluesky accounts via goat.
 
 ## Usage
 
+Required packages: jq, golang
+
+- python3 -m venv .venv
+- source .venv/bin/activate
+- pip install -r requirements.txt
+
 - `./install.sh`
   Installs the [goat](https://github.com/bluesky-social/indigo/blob/main/cmd/goat/README.md) repo-fetching tool.
 

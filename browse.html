@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Thread Browser</title>
+<style>
+  :root { color-scheme: light; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: #222; background: #fafaf7;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; gap: 0.5em 0.8em; align-items: center; flex-wrap: wrap;
+    padding: 0.4em 0.8em; border-bottom: 1px solid #ddd; background: #fff;
+    flex: 0 0 auto;
+  }
+  header input { width: 12em; padding: 0.3em 0.5em; font: inherit; }
+  header button { padding: 0.3em 0.8em; font: inherit; cursor: pointer; }
+  #avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
+  #account { display: flex; flex-direction: column; line-height: 1.2; margin-right: auto; }
+  #acctName { font-weight: 600; color: #1a1a1a; }
+  #acctName a { color: #2a8c57; text-decoration: none; font-weight: 500; }
+  #acctName a:hover { text-decoration: underline; }
+  #searchbox { display: inline-flex; gap: 0.3em; align-items: center; }
+  #acctDesc { font-size: 0.8em; color: #888; }
+  #help { color: #999; font-size: 0.78em; }
+  #status { color: #888; font-size: 0.85em; }
+
+  main { flex: 1 1 auto; display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
+  aside {
+    font-size: 0.85em; overflow-y: auto;
+    padding: 0.5em; border-right: 1px solid #eee; background: #fff;
+  }
+  aside h3 { margin: 0.2em 0 0.5em; font-size: 0.8em; color: #555; text-transform: uppercase; letter-spacing: 0.05em; }
+  aside .item { padding: 0.4em 0.3em; cursor: pointer; border-bottom: 1px solid #f1f1ec; }
+  aside .item:hover { background: #f3f3ee; }
+  aside .item.active { background: #fff3da; }
+  aside .item .meta { color: #999; font-size: 0.85em; }
+  aside .item .snip { color: #333; }
+  aside .item mark { background: #fff3c4; color: inherit; padding: 0 1px; border-radius: 2px; }
+
+  #view { position: relative; min-width: 0; min-height: 0; }
+  #graph { width: 100%; height: 100%; display: block; cursor: grab; background:
+    repeating-linear-gradient(0deg,#f4f4ef 0 1px,transparent 1px 26px),
+    repeating-linear-gradient(90deg,#f4f4ef 0 1px,transparent 1px 26px), #fafaf7; }
+  #graph.grabbing { cursor: grabbing; }
+
+  .node rect { fill: #fff; stroke: #c9c9c0; stroke-width: 1.2; rx: 6; }
+  .node:hover rect { stroke: #2a9d6a; }
+  .node.focus rect { fill: #fffbef; stroke: #f4a127; stroke-width: 2; }
+  .node.quote rect { fill: #f6f5ef; stroke-dasharray: 4 3; }
+  .node.tweet rect { fill: #eef6fc; stroke: #9ccdf0; }   /* light Twitter blue */
+  .node .date { fill: #999; font-size: 10px; }
+  .node a .date.link { cursor: pointer; }
+  .node a:hover .date.link { fill: #2a8c57; text-decoration: underline; }
+  .node .body { fill: #222; font-size: 12px; }
+  .node .badge { fill: #2a9d6a; font-size: 10px; }
+  .node .lnk { fill: #2a8c57; text-decoration: underline; }
+  .node .men, .node .tag { fill: #3a72c4; }
+  .node text.foot { font-size: 10.5px; }
+  .node .clink { fill: #2a8c57; }
+  .node .cmedia { fill: #999; }
+  .node .dbl { fill: none; stroke: #c79a4a; stroke-width: 1; }
+  .node .imgframe { fill: #eeede5; stroke: #d4d2c5; stroke-width: 1; }
+  .node .imgcap { fill: #6f6f64; font-size: 11px; }
+  .node .imgcap .ic { fill: #aeab9c; }
+  .node { cursor: pointer; }
+
+  .edge { fill: none; stroke: #b9b9ae; stroke-width: 1.4; }
+  .edge.quoteedge { stroke: #c79a4a; stroke-dasharray: 5 4; marker-end: url(#qarrow); }
+  .edge.graft { stroke: #c79a4a; }
+
+  #legend {
+    position: absolute; left: 10px; bottom: 10px;
+    background: rgba(255,255,255,0.9); border: 1px solid #e3e3da; border-radius: 5px;
+    padding: 0.3em 0.6em; font-size: 0.78em; color: #666;
+  }
+  #legend svg { vertical-align: middle; }
+  .hint { position: absolute; inset: 0; display: grid; place-items: center; color: #999; padding: 2em; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <img id="avatar" alt="" hidden>
+  <div id="account">
+    <span id="acctName"></span>
+    <span id="acctDesc"></span>
+  </div>
+  <span id="help">scroll zoom · drag pan · click opens · ⌘/ctrl-click a quote merges its thread</span>
+  <button id="fit">Fit</button>
+  <span id="searchbox">
+    <input id="q" placeholder="search posts…" autocomplete="off">
+    <button id="clear" title="Cancel search, back to all threads">← Threads</button>
+  </span>
+  <span id="status"></span>
+</header>
+<main>
+  <aside id="sidebar"></aside>
+  <section id="view">
+    <svg id="graph">
+      <defs>
+        <marker id="qarrow" viewBox="0 0 10 10" refX="9" refY="5"
+                markerWidth="8" markerHeight="8" orient="auto">
+          <!-- context-stroke: arrowhead inherits each edge's own stroke colour -->
+          <path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+        </marker>
+      </defs>
+      <g id="scene"></g>
+    </svg>
+    <div id="legend">
+      <svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" stroke="#b9b9ae" stroke-width="1.4"/></svg> reply&nbsp;&nbsp;
+      <svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" stroke="#c79a4a" stroke-width="1.4" stroke-dasharray="5 4"/></svg> quote
+    </div>
+    <div class="hint" id="hint">Loading…</div>
+  </section>
+</main>
+
+<script type="module">
+// ES module: strict by default, module-scoped (no globals leak), and deferred —
+// so the DOM is already parsed when this runs.
+const SVGNS = "http://www.w3.org/2000/svg";
+// index entries are compact: { t:text, d:createdAt, p:parentRkey?, q:[quoted]?,
+//   f:facets?, alt:[strings]?, ext:{u,t,d}?, img:n?, vid:true? }
+// Quoted tweets are real entries keyed "x:<rkey>" with { tweet:true, u, t, a }.
+let INDEX = {};
+let DID = "";          // repo DID, for building bsky.app permalinks
+let META = {};         // account profile: {name, desc, handle, avatar}
+let PINS = [];         // pinned thread roots shown together (ctrl+click merges threads)
+// Cache of the last full render so a click within the same pinned set can just
+// move the highlight + pan, instead of re-laying-out and re-fitting the view.
+let lastPinsKey = null, lastPos = null, lastH = null, lastBounds = null;
+const children = {};   // rkey -> [child rkeys]   (local replies)
+const quotedBy = {};   // rkey -> [quoting rkeys] (local quotes pointing in)
+
+let FOCUS = null;
+
+// Layout constants. Boxes are fixed width but grow in height to fit their text
+// (posts cap near 300 chars), so short posts stay compact and long ones aren't
+// clipped. Per-node heights live in the HMAP built each navigate().
+const NODE_W = 240, H_GAP = 26, V_GAP = 46, SAT_GAP = 34, SAT_VGAP = 14, FOREST_GAP = 90;
+const PAD = 11, DATE_Y = 16, BODY_TOP = 33, LINE_H = 16;
+const MAX_CHARS = 35, MAX_LINES = 11;
+
+const $ = (s) => document.querySelector(s);
+const setStatus = (m) => { $("#status").textContent = m; };
+const svg = $("#graph");
+const scene = $("#scene");
+
+// ---- view transform (pan / zoom) ----
+let tx = 0, ty = 0, scale = 1;
+function applyTransform() {
+  scene.setAttribute("transform", `translate(${tx},${ty}) scale(${scale})`);
+}
+
+// ---------- data loading ----------
+async function load(src = "index.json") {
+  setStatus("Loading " + src + "…");
+  let data;
+  try {
+    const r = await fetch(src);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    data = await r.json();
+  } catch (e) {
+    setStatus("Load failed: " + e.message);
+    $("#hint").style.display = "grid";
+    $("#hint").innerHTML = `Couldn't load <code>${src}</code>. Build it with:<br><br><code>python3 thread_browser.py &lt;did:plc:…&gt; --serve</code>`;
+    return;
+  }
+  INDEX = data.posts || data;            // {did, meta, posts} payload (or a bare map)
+  DID = data.did || "";
+  META = data.meta || {};
+  populateHeader();
+  buildGraph();
+  buildSidebar();
+  setStatus(`${Object.keys(INDEX).length} posts loaded.`);
+  FOCUS = null; PINS = []; lastPinsKey = null;   // force the first navigate to fully render (and replace, not push)
+  const v = parseHash();
+  if (v) setView(v.focus, v.pins);               // restore a shared/bookmarked (possibly merged) view
+  else {
+    const first = topThreads()[0];
+    if (first) navigate(first.rkey);
+  }
+}
+
+function buildGraph() {
+  for (const rkey in INDEX) { children[rkey] = []; quotedBy[rkey] = []; }
+  for (const rkey in INDEX) {
+    const e = INDEX[rkey];
+    if (e.p && INDEX[e.p]) children[e.p].push(rkey);
+    for (const q of e.q || []) if (INDEX[q]) quotedBy[q].push(rkey);
+  }
+  const byDate = (a, b) => (INDEX[a].d || "").localeCompare(INDEX[b].d || "");
+  for (const k in children) children[k].sort(byDate);
+  for (const k in quotedBy) quotedBy[k].sort(byDate);
+}
+
+function localRoot(rkey) {
+  const seen = new Set([rkey]);
+  let cur = rkey;
+  while (true) {
+    const par = INDEX[cur] && INDEX[cur].p;
+    if (!par || !INDEX[par] || seen.has(par)) return cur;
+    seen.add(par);
+    cur = par;
+  }
+}
+
+function isLocalRoot(rkey) {
+  const e = INDEX[rkey];
+  return !e.p || !INDEX[e.p];
+}
+
+// An empty reply to someone else's post is noise — skip it. The exception is
+// the trick of replying to an outside post with only a quote of one of our own
+// posts, which we keep because it connects that post into our own tree.
+function isNoise(rkey) {
+  const e = INDEX[rkey];
+  if ((e.t || "").trim()) return false;          // has its own words
+  if (!e.p || INDEX[e.p]) return false;           // not a reply to someone else
+  return !(e.q || []).some(q => INDEX[q]);        // keep only if it quotes our own post
+}
+
+// A textless leaf reply to one of our own posts whose only payload is a quote
+// is just a connector — we collapse the empty box and hang its quote straight
+// off the parent (drawn with a double border to flag the shortcut).
+function isCollapsible(rkey) {
+  const e = INDEX[rkey];
+  if ((e.t || "").trim()) return false;           // has its own words
+  if (!e.p || !INDEX[e.p]) return false;          // must reply to one of our posts
+  if (e.img || e.vid || e.ext) return false;      // carries other content
+  if (children[rkey].length) return false;        // has replies — would orphan them
+  return e.q && e.q.some(q => INDEX[q]);
+}
+
+function descendantCount(rkey, seen) {
+  seen = seen || new Set();
+  if (seen.has(rkey)) return 0;
+  seen.add(rkey);
+  let n = 0;
+  for (const c of children[rkey]) n += 1 + descendantCount(c, seen);
+  return n;
+}
+
+function topThreads() {
+  const score = (r) => descendantCount(r) + (quotedBy[r] ? quotedBy[r].length : 0);
+  return Object.keys(INDEX)
+    .filter(r => isLocalRoot(r) && !isNoise(r) && !INDEX[r].tweet)
+    .map(r => ({rkey: r, s: score(r), d: INDEX[r].d || ""}))
+    .filter(x => x.s > 0)
+    .sort((a, b) => (b.s - a.s) || b.d.localeCompare(a.d));
+}
+
+// A sidebar row: date meta + snippet, clicking centers `goto`. `mark` (lowercased
+// query) highlights the matched text in context.
+function sidebarItem(rk, goto, metaText, mark) {
+  const div = document.createElement("div");
+  const root = localRoot(rk);
+  div.className = "item" + (PINS.includes(root) ? " active" : "");
+  div.dataset.root = root;
+  div.onclick = () => navigate(goto);
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = metaText;
+  div.appendChild(meta);
+  const snip = document.createElement("div");
+  snip.className = "snip";
+  const t = INDEX[rk].t || "(no text)";
+  const i = mark ? t.toLowerCase().indexOf(mark) : -1;
+  if (i < 0) {
+    snip.textContent = t.slice(0, 110);
+  } else {                                    // show the match in context, highlighted
+    const start = Math.max(0, i - 28);
+    snip.append(start ? "…" + t.slice(start, i) : t.slice(0, i));
+    const m = document.createElement("mark");
+    m.textContent = t.slice(i, i + mark.length);
+    snip.append(m);
+    const end = i + mark.length + 80;
+    snip.append(t.slice(i + mark.length, end) + (end < t.length ? "…" : ""));
+  }
+  div.appendChild(snip);
+  return div;
+}
+
+// Fill the header with the account: avatar, display name, @handle (linked to
+// bsky.app), and the profile description.
+function populateHeader() {
+  const m = META;
+  // Plain display name, then "(@handle)" where only the @handle links to bsky.
+  const a = $("#acctName");
+  a.textContent = m.name || "(account)";
+  if (m.handle) {
+    a.append(" (");
+    const lk = document.createElement("a");
+    lk.href = `https://bsky.app/profile/${m.handle}`;
+    lk.target = "_blank"; lk.rel = "noopener";
+    lk.textContent = "@" + m.handle;
+    a.append(lk, ")");
+  }
+  $("#acctDesc").textContent = m.desc || "";
+  const av = $("#avatar");
+  if (m.avatar && DID) {
+    av.src = `https://cdn.bsky.app/img/avatar_thumbnail/plain/${DID}/${m.avatar}@jpeg`;
+    av.hidden = false;
+  } else {
+    av.hidden = true;
+  }
+  document.title = (m.name || m.handle || "Thread") + " — Thread Browser";
+}
+
+function buildSidebar() {
+  const sb = $("#sidebar");
+  sb.innerHTML = "";
+  const q = ($("#q").value || "").trim().toLowerCase();
+  const h = document.createElement("h3");
+  sb.appendChild(h);
+
+  if (q) {                                    // search: list the matching posts themselves
+    const hits = [];
+    for (const rk in INDEX) {
+      if (INDEX[rk].tweet) continue;
+      if ((INDEX[rk].t || "").toLowerCase().includes(q)) hits.push(rk);
+    }
+    hits.sort((a, b) => (INDEX[b].d || "").localeCompare(INDEX[a].d || ""));   // most recent first
+    h.textContent = `${hits.length} post${hits.length === 1 ? "" : "s"} match “${q}”`;
+    for (const rk of hits.slice(0, 300))
+      sb.appendChild(sidebarItem(rk, rk, (INDEX[rk].d || "").slice(0, 10), q));
+    return;
+  }
+
+  const ranked = topThreads();
+  h.textContent = `Top threads (${ranked.length})`;
+  for (const {rkey, s} of ranked.slice(0, 250))
+    sb.appendChild(sidebarItem(rkey, rkey, (INDEX[rkey].d || "").slice(0, 10) + ` · ${s} ↳`, null));
+}
+
+// ---------- text helpers ----------
+// Split text into styled runs using the byte-offset facets (links/mentions/tags).
+function richSegments(e) {
+  const txt = e.t || "";
+  if (!txt.trim()) {
+    let t = "(no text)";
+    if (e.alt && e.alt.some(Boolean)) t = e.alt.filter(Boolean).join(" / ");
+    else if (e.ext && e.ext.t) t = e.ext.t;
+    else if (e.img) t = "[image]";
+    else if (e.vid) t = "[video]";
+    return [{t}];
+  }
+  if (!e.f || !e.f.length) return [{t: txt}];
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  const bytes = enc.encode(txt);
+  const facets = [...e.f].sort((a, b) => a.index.byteStart - b.index.byteStart);
+  const segs = [];
+  let cursor = 0;
+  for (const f of facets) {
+    const start = f.index.byteStart, end = f.index.byteEnd;
+    if (start < cursor) continue;
+    if (start > cursor) segs.push({t: dec.decode(bytes.slice(cursor, start))});
+    const inner = dec.decode(bytes.slice(start, end));
+    const feat = f.features[0];
+    if (feat.$type === "app.bsky.richtext.facet#link") segs.push({t: inner, link: feat.uri});
+    else if (feat.$type === "app.bsky.richtext.facet#mention") segs.push({t: inner, men: true});
+    else if (feat.$type === "app.bsky.richtext.facet#tag") segs.push({t: inner, tag: true});
+    else segs.push({t: inner});
+    cursor = end;
+  }
+  if (cursor < bytes.length) segs.push({t: dec.decode(bytes.slice(cursor))});
+  return segs;
+}
+
+// Greedy word-wrap that preserves each run's style; returns lines of runs.
+function wrapSegs(segs) {
+  const lines = [];
+  let cur = [], curLen = 0, truncated = false;
+  const pushLine = () => { lines.push(cur); cur = []; curLen = 0; };
+  const add = (text, seg) => { cur.push({text, link: seg.link, men: seg.men, tag: seg.tag}); curLen += text.length; };
+
+  outer:
+  for (const seg of segs) {
+    for (let part of seg.t.split(/(\s+)/)) {
+      if (part === "") continue;
+      if (/^\s+$/.test(part)) {                       // whitespace
+        if (part.includes("\n")) { if (cur.length) pushLine(); }   // newline → hard break
+        else if (curLen > 0) add(" ", seg);                        // soft space (not at line start)
+        continue;
+      }
+      while (part.length > MAX_CHARS) {               // hard-break very long token
+        if (curLen > 0) pushLine();
+        if (lines.length >= MAX_LINES) { truncated = true; break outer; }
+        add(part.slice(0, MAX_CHARS - 1) + "·", seg);
+        pushLine();
+        part = part.slice(MAX_CHARS - 1);
+      }
+      if (curLen > 0 && curLen + part.length > MAX_CHARS) {
+        pushLine();
+        if (lines.length >= MAX_LINES) { truncated = true; break outer; }
+      }
+      add(part, seg);
+    }
+  }
+  if (cur.length) pushLine();
+  if (lines.length > MAX_LINES) { lines.length = MAX_LINES; truncated = true; }
+  if (truncated && lines.length) {
+    const last = lines[lines.length - 1];
+    if (last.length) { const r = last[last.length - 1]; r.text = r.text.replace(/.$/, "") + "…"; }
+    else last.push({text: "…"});
+  }
+  return lines;
+}
+
+function domain(u) {
+  try { return new URL(u).hostname.replace(/^www\./, ""); }
+  catch { return (u || "").slice(0, 22); }
+}
+
+// Footer chips for attachments with no inline representation. Inline facet
+// links aren't listed here — they're shown in the text (hover for the URL), so
+// a footer chip would just be noise. External cards / video / tweets aren't in
+// the text, so they get a chip.
+function mediaChips(e) {
+  const c = [];
+  if (e.ext && e.ext.u) {
+    const title = (e.ext.t || "").trim();
+    const label = title ? (title.length > 46 ? title.slice(0, 45) + "…" : title) : domain(e.ext.u);
+    const tip = [title, e.ext.d, domain(e.ext.u)].filter(Boolean).join("\n");
+    c.push({label: "▤ " + label, url: e.ext.u, cls: "clink", title: tip});
+  }
+  if (e.vid) c.push({label: "▶ video", cls: "cmedia"});
+  if (e.tweet && e.u) c.push({label: "↗ " + domain(e.u), url: e.u, cls: "clink"});
+  return c;                              // images are drawn as a frame, not a chip
+}
+
+// Plain greedy wrap (no facets) for short captions like image alt text.
+function wrapPlain(s, maxChars, maxLines) {
+  const words = s.split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = "", idx = 0;
+  for (; idx < words.length; idx++) {
+    const next = cur ? cur + " " + words[idx] : words[idx];
+    if (next.length > maxChars && cur) {
+      lines.push(cur); cur = words[idx];
+      if (lines.length === maxLines) break;
+    } else cur = next;
+  }
+  if (lines.length < maxLines && cur) { lines.push(cur); idx = words.length; }
+  if (idx < words.length && lines.length) lines[lines.length - 1] = lines[lines.length - 1].replace(/.$/, "") + "…";
+  return lines;
+}
+
+// Build wrapped lines, image frame, chips, and pixel height (cached per view).
+function nodeLayout(rk) {
+  const e = INDEX[rk];
+  const lines = wrapSegs(richSegments(e));
+  const chips = mediaChips(e);
+  let img = null;
+  if (e.img) {
+    const alt = (e.alt || []).filter(Boolean).join(" • ");
+    const altLines = alt ? wrapPlain(alt, 31, 3) : [];
+    img = {n: e.img, altLines, h: 9 + Math.max(1, altLines.length) * 13 + 7};
+  }
+  let h = BODY_TOP + (lines.length - 1) * LINE_H + 6;
+  if (img) h += 6 + img.h;
+  if (chips.length) h += 8 + 13;
+  h += 9;
+  return {lines, chips, img, h};
+}
+
+// ---------- visible subgraph ----------
+// Build the union of every pinned thread. Quotes between two visible posts
+// become connecting edges; quotes to anything outside stay as satellites.
+function buildVisible(pins) {
+  const pinSet = new Set(pins);
+  const tree = new Set();
+  for (const root of pins) (function walk(rk) {
+    if (tree.has(rk)) return;
+    tree.add(rk);
+    for (const c of children[rk]) walk(c);
+  })(root);
+
+  // Collapse blank quote-only leaf replies to our own posts: drop the empty box
+  // and graft the quoted post into its slot AS A REPLY (it really is one) — a
+  // child via a solid edge, drawn with a double border to flag the shortcut.
+  const collapsed = [];
+  for (const rk of tree) if (!pinSet.has(rk) && isCollapsible(rk)) collapsed.push(rk);
+  for (const rk of collapsed) tree.delete(rk);
+
+  const grafts = new Set();                       // grafted nodes — drawn double-boxed
+  const treeKids = {};                            // per-view child lists (replies + grafts)
+  for (const rk of tree) treeKids[rk] = children[rk].filter(c => tree.has(c));
+
+  const quoteEdges = [];   // {from, to}  meaning "from quotes to"
+  // An off-tree quote post is one box (satNodeMap) but every link to it gets its
+  // own edge (satEdges) — so a post quoted by several visible posts shows once
+  // with several arrows pointing in.
+  const satNodeMap = {};   // rkey -> {rkey, anchor, dir}  (placement + badge)
+  const satEdges = [];     // {anchor, sat, dir}           (one per quote link)
+  const addSat = (q, anchor, dir) => {
+    if (!satNodeMap[q]) satNodeMap[q] = {rkey: q, anchor, dir};   // place beside its first linker
+    satEdges.push({anchor, sat: q, dir});
+  };
+
+  for (const c of collapsed) {
+    const anchor = INDEX[c].p;                     // a collapsed leaf's parent is never collapsed
+    if (!tree.has(anchor)) continue;
+    for (const q of INDEX[c].q || []) {
+      if (!INDEX[q]) continue;
+      if (tree.has(q)) quoteEdges.push({from: anchor, to: q});   // target already shown → just link
+      else { tree.add(q); treeKids[q] = []; treeKids[anchor].push(q); grafts.add(q); }
+    }
+  }
+
+  // Quote edges + satellites for the real (non-grafted) tree.
+  for (const n of tree) {
+    if (grafts.has(n)) continue;                   // grafted leaves carry no further links here
+    for (const q of INDEX[n].q || []) {
+      if (!INDEX[q]) continue;
+      if (tree.has(q)) quoteEdges.push({from: n, to: q});
+      else if (!isNoise(q)) addSat(q, n, "out");
+    }
+    for (const q of quotedBy[n]) {       // in-tree quotes are caught from the other side
+      if (!tree.has(q)) addSat(q, n, "in");
+    }
+  }
+  return {tree, quoteEdges, satNodes: Object.values(satNodeMap), satEdges, treeKids, grafts};
+}
+
+// Contour-based tidy tree (Reingold–Tilford style): each subtree is packed as
+// close to its left sibling as its actual silhouette allows, per depth — so a
+// shallow branch sits right next to a deep/wide neighbour instead of being
+// shoved aside by raw leaf counts. Only x/depth are set here; y comes from rows.
+//
+// `res` (optional) reserves a quote gutter beside chosen anchors: res.span[rk]
+// = how many rows the anchor's quote stack spans, res.side[rk] = "L"|"R". The
+// gutter is baked into the node's contour so the tree relaxes to clear it, and
+// res.gutterOffset[rk] (x of the gutter relative to the node) is filled in for
+// placement. Pass res=null for a plain pass.
+function layoutTree(root, tree, treeKids, res) {
+  const pos = {};
+  const SEP = NODE_W + H_GAP;
+  const kidsOf = (rk) => treeKids[rk] || [];
+  const shift = (rk, dx) => { pos[rk].x += dx; for (const c of kidsOf(rk)) shift(c, dx); };
+
+  // Widen one side's contour to fit the anchor's quote gutter over its row span.
+  function reserve(rk, cx, left, right) {
+    const k = res.span[rk];
+    if (res.side[rk] === "R") {
+      let edge = -Infinity;
+      for (let i = 0; i <= Math.min(k, right.length - 1); i++) edge = Math.max(edge, right[i] + NODE_W);
+      const satLeft = edge + SAT_GAP;
+      res.gutterOffset[rk] = satLeft - cx;
+      for (let i = 0; i <= k; i++) {
+        if (i < right.length) right[i] = Math.max(right[i], satLeft);
+        else { right.push(satLeft); left.push(satLeft); }
+      }
+    } else {
+      let edge = Infinity;
+      for (let i = 0; i <= Math.min(k, left.length - 1); i++) edge = Math.min(edge, left[i]);
+      const satLeft = edge - SAT_GAP - NODE_W;
+      res.gutterOffset[rk] = satLeft - cx;
+      for (let i = 0; i <= k; i++) {
+        if (i < left.length) left[i] = Math.min(left[i], satLeft);
+        else { left.push(satLeft); right.push(satLeft); }
+      }
+    }
+  }
+
+  // returns left/right contours (x per relative depth, 0 = this node)
+  function build(rk, depth) {
+    const kids = kidsOf(rk);
+    let cx, left, right;
+    if (!kids.length) {
+      cx = 0; left = [0]; right = [0];
+    } else {
+      const childC = [];
+      let acc = null;                            // running right contour of placed siblings
+      for (let i = 0; i < kids.length; i++) {
+        const c = build(kids[i], depth + 1);
+        if (i === 0) { childC.push(c); acc = c.right.slice(); continue; }
+        let s = 0;                               // shift needed so this child clears its left siblings
+        const common = Math.min(acc.length, c.left.length);
+        for (let d = 0; d < common; d++) s = Math.max(s, acc[d] + SEP - c.left[d]);
+        shift(kids[i], s);
+        const cl = c.left.map(v => v + s), cr = c.right.map(v => v + s);
+        childC.push({left: cl, right: cr});
+        for (let d = 0; d < cr.length; d++) { if (d < acc.length) acc[d] = cr[d]; else acc.push(cr[d]); }
+      }
+      cx = (pos[kids[0]].x + pos[kids[kids.length - 1]].x) / 2;
+      left = [cx]; right = [cx];
+      let maxLen = 0;
+      for (const c of childC) maxLen = Math.max(maxLen, c.left.length);
+      for (let d = 0; d < maxLen; d++) {
+        let lo = Infinity, hi = -Infinity;
+        for (const c of childC) {
+          if (d < c.left.length) lo = Math.min(lo, c.left[d]);
+          if (d < c.right.length) hi = Math.max(hi, c.right[d]);
+        }
+        left.push(lo); right.push(hi);
+      }
+    }
+    pos[rk] = {x: cx, depth};
+    if (res && res.span[rk] != null) reserve(rk, cx, left, right);
+    return {left, right};
+  }
+
+  build(root, 0);
+  return pos;                                    // raw coords; layoutForest places & offsets
+}
+
+// Lay each pinned thread out independently and stack them left-to-right (gutters
+// included in each tree's extent), so a merged view shows the threads as
+// adjacent trees joined by their quote edges.
+function layoutForest(pins, tree, treeKids, res) {
+  const pos = {};
+  let cursor = 0;
+  for (const root of pins) {
+    const sub = layoutTree(root, tree, treeKids, res);
+    let lo = Infinity, hi = -Infinity;
+    for (const k in sub) { lo = Math.min(lo, sub[k].x); hi = Math.max(hi, sub[k].x + NODE_W); }
+    if (res) for (const k in sub) {              // include reserved quote gutters in the extent
+      const off = res.gutterOffset[k];
+      if (off == null) continue;
+      lo = Math.min(lo, sub[k].x + off); hi = Math.max(hi, sub[k].x + off + NODE_W);
+    }
+    const dx = cursor - lo;
+    for (const k in sub) pos[k] = {x: sub[k].x + dx, depth: sub[k].depth};
+    cursor = hi + dx + FOREST_GAP;
+  }
+  return pos;
+}
+
+// ---------- SVG drawing ----------
+function el(tag, attrs, parent) {
+  const n = document.createElementNS(SVGNS, tag);
+  for (const k in attrs) n.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(n);
+  return n;
+}
+
+function drawEdge(parent, x1, y1, x2, y2, cls) {
+  // vertical-ish cubic bezier for reply edges; gentle curve for quotes
+  const dy = (y2 - y1);
+  const c = Math.max(20, Math.abs(dy) * 0.4);
+  const d = `M ${x1} ${y1} C ${x1} ${y1 + c}, ${x2} ${y2 - c}, ${x2} ${y2}`;
+  el("path", {d, class: cls}, parent);
+}
+
+function openLink(url) {
+  return (ev) => { ev.stopPropagation(); window.open(url, "_blank", "noopener"); };
+}
+
+function drawNode(parent, rkey, x, y, lay, cls, badge, dbl) {
+  const e = INDEX[rkey];
+  const klass = "node " + (cls || "") + (e.tweet ? " tweet" : "");
+  const g = el("g", {class: klass, "data-rkey": rkey, transform: `translate(${x},${y})`}, parent);
+  el("rect", {width: NODE_W, height: lay.h, rx: 6}, g);
+  if (dbl) el("rect", {x: 3, y: 3, width: NODE_W - 6, height: lay.h - 6, rx: 4, class: "dbl"}, g);
+
+  // date — links to the real bsky.app post (skip tweet nodes, which have no date)
+  const dstr = (e.d || "").slice(0, 10);
+  if (dstr && DID && !e.tweet) {
+    const a = el("a", {href: `https://bsky.app/profile/${DID}/post/${rkey}`,
+                       target: "_blank", rel: "noopener"}, g);
+    const date = el("text", {x: PAD, y: DATE_Y, class: "date link"}, a);
+    date.textContent = dstr;
+    const t = el("title", {}, a); t.textContent = "Open on Bluesky";
+    a.addEventListener("click", (ev) => ev.stopPropagation());   // don't also recenter
+  } else if (dstr) {
+    const date = el("text", {x: PAD, y: DATE_Y, class: "date"}, g);
+    date.textContent = dstr;
+  }
+  if (badge) {
+    const b = el("text", {x: NODE_W - 8, y: DATE_Y, class: "badge", "text-anchor": "end"}, g);
+    b.textContent = badge;
+  }
+
+  // body — one <text> per wrapped line, with styled (and clickable) runs
+  lay.lines.forEach((runs, i) => {
+    const line = el("text", {x: PAD, y: BODY_TOP + i * LINE_H, class: "body"}, g);
+    for (const r of runs) {
+      const klass = r.link ? "lnk" : r.men ? "men" : r.tag ? "tag" : null;
+      const ts = el("tspan", klass ? {class: klass} : {}, line);
+      ts.textContent = r.text;
+      if (r.link) {
+        const t = el("title", {}, ts); t.textContent = r.link;   // hover shows the URL
+        ts.addEventListener("click", openLink(r.link));
+      }
+    }
+  });
+
+  let yb = BODY_TOP + (lay.lines.length - 1) * LINE_H + 6;   // bottom of the text block
+
+  // image picture-frame, captioned with alt text (or a plain image marker)
+  if (lay.img) {
+    const fy = yb + 6;
+    el("rect", {x: PAD, y: fy, width: NODE_W - 2 * PAD, height: lay.img.h, rx: 3, class: "imgframe"}, g);
+    const cap = el("text", {x: PAD + 7, y: fy + 16, class: "imgcap"}, g);
+    const ic = el("tspan", {class: "ic"}, cap);
+    ic.textContent = lay.img.n > 1 ? `▣ ×${lay.img.n}  ` : "▣  ";
+    if (lay.img.altLines.length) {
+      lay.img.altLines.forEach((ln, i) => {
+        const ts = el("tspan", i === 0 ? {} : {x: PAD + 7, dy: 13}, cap);
+        ts.textContent = ln;
+      });
+    } else {
+      const ts = el("tspan", {}, cap);
+      ts.textContent = "image";
+    }
+    yb = fy + lay.img.h;
+  }
+
+  // footer chips
+  if (lay.chips.length) {
+    const foot = el("text", {x: PAD, y: yb + 8 + 5, class: "foot"}, g);
+    lay.chips.forEach((c, i) => {
+      if (i) { const sp = el("tspan", {}, foot); sp.textContent = "   "; }
+      const ts = el("tspan", {class: c.cls}, foot);
+      ts.textContent = c.label;
+      if (c.title) { const t = el("title", {}, ts); t.textContent = c.title; }
+      if (c.url) ts.addEventListener("click", openLink(c.url));
+    });
+  }
+
+  g.addEventListener("click", (ev) => {
+    if (didDrag) return;
+    ev.stopPropagation();
+    if (e.tweet) { if (e.u) window.open(e.u, "_blank", "noopener"); }
+    else if (ev.ctrlKey || ev.metaKey) mergeThread(rkey);   // merge this post's thread
+    else navigate(rkey);
+  });
+  return g;
+}
+
+const pinsKey = () => PINS.join("|");
+
+// The hash holds the whole view: "<focus>" for a single thread, or
+// "<focus>,<root1>,<root2>,…" listing every pinned root for a merged view.
+function hashFor(focus, pins) {
+  if (pins.length === 1 && pins[0] === localRoot(focus)) return focus;
+  return [focus, ...pins].join(",");
+}
+
+function parseHash() {
+  const parts = decodeURIComponent(location.hash.slice(1)).split(",").filter(Boolean);
+  const focus = parts[0];
+  if (!focus || !INDEX[focus]) return null;
+  let pins = (parts.length > 1 ? parts.slice(1) : [localRoot(focus)]).filter(p => INDEX[p]);
+  const fr = localRoot(focus);
+  if (!pins.includes(fr)) pins.unshift(fr);   // focus's own thread must be present
+  return {focus, pins};
+}
+
+// Apply a view (focus + pinned thread set). The hash is the source of truth, so
+// Back/Forward and shared URLs both restore the exact merged view. The first
+// view replaces rather than stacks a duplicate entry.
+function setView(focus, pins) {
+  const replace = FOCUS === null;
+  FOCUS = focus; PINS = pins;
+  const hash = "#" + hashFor(focus, pins);
+  if (replace) history.replaceState(null, "", hash);
+  else history.pushState(null, "", hash);
+  render(focus);
+}
+
+// Normal click: focus a post. If its thread is already on screen, keep the
+// current (possibly merged) view and just refocus; otherwise jump to it alone.
+function navigate(focus) {
+  if (!INDEX[focus]) return;
+  const root = localRoot(focus);
+  const pins = PINS.includes(root) ? PINS : [root];
+  if (focus === FOCUS && pins.join("|") === pinsKey()) return;
+  setView(focus, pins);
+}
+
+// Ctrl/Cmd+click a quote: merge that post's whole thread into the current view.
+function mergeThread(rkey) {
+  if (!INDEX[rkey] || INDEX[rkey].tweet) return;   // tweets have no thread
+  const root = localRoot(rkey);
+  setView(rkey, PINS.includes(root) ? PINS : [...PINS, root]);
+}
+
+function render(focus) {
+  FOCUS = focus;
+  $("#hint").style.display = "none";
+
+  // mark every pinned thread active in the sidebar
+  document.querySelectorAll("#sidebar .item").forEach(it =>
+    it.classList.toggle("active", PINS.includes(it.dataset.root)));
+
+  // Same pinned set already on screen → no relayout/refit; just move the focus
+  // highlight and pan the new post into view if it's off-screen.
+  if (pinsKey() === lastPinsKey && lastPos && lastPos[focus]) {
+    setFocusNode(focus);
+    panIntoView(focus);
+    return;
+  }
+
+  const {tree, quoteEdges, satNodes, satEdges, treeKids, grafts} = buildVisible(PINS);
+
+  // Per-node wrapped text + height, cached for this view.
+  const LAY = {};
+  const H = (rk) => LAY[rk].h;
+  for (const rk of tree) LAY[rk] = nodeLayout(rk);
+  for (const s of satNodes) if (!LAY[s.rkey]) LAY[s.rkey] = nodeLayout(s.rkey);
+
+  // Pass 1: provisional layout (no quote gutters) → positions + depths.
+  const pos1 = layoutForest(PINS, tree, treeKids, null);
+
+  // Rows: each depth's top = sum of taller rows above it, so variable-height
+  // boxes never overlap vertically while siblings stay aligned. (depth + height
+  // are fixed, so these rows are final and survive pass 2.)
+  let maxDepth = 0;
+  for (const rk of tree) maxDepth = Math.max(maxDepth, pos1[rk].depth);
+  const depthH = new Array(maxDepth + 1).fill(0);
+  for (const rk of tree) depthH[pos1[rk].depth] = Math.max(depthH[pos1[rk].depth], H(rk));
+  const rowTop = new Array(maxDepth + 1);
+  for (let d = 0, acc = 0; d <= maxDepth; d++) { rowTop[d] = acc; acc += depthH[d] + V_GAP; }
+
+  // Group quotes by anchor; pick the outward side (fan away from tree centre)
+  // and the row span each quote stack covers, using pass-1 positions + rows.
+  const anchorSats = {};
+  for (const s of satNodes) (anchorSats[s.anchor] || (anchorSats[s.anchor] = [])).push(s);
+  let cMin = Infinity, cMax = -Infinity;
+  for (const rk of tree) { cMin = Math.min(cMin, pos1[rk].x); cMax = Math.max(cMax, pos1[rk].x + NODE_W); }
+  const center = (cMin + cMax) / 2;
+  const side = {}, span = {};
+  for (const a in anchorSats) {
+    side[a] = (pos1[a].x + NODE_W / 2) < center ? "L" : "R";
+    let hsum = 0;
+    anchorSats[a].forEach((s, i) => { hsum += LAY[s.rkey].h + (i ? SAT_VGAP : 0); });
+    const d = pos1[a].depth, yBottom = rowTop[d] + hsum;
+    let k = 0;
+    while (d + k + 1 <= maxDepth && rowTop[d + k + 1] < yBottom) k++;
+    span[a] = k;
+  }
+
+  // Pass 2: re-layout reserving each anchor's gutter, so the tree relaxes around
+  // the quotes. Rows are unchanged (depths fixed), so reuse rowTop for y.
+  const res = {side, span, gutterOffset: {}};
+  const pos = layoutForest(PINS, tree, treeKids, res);
+  for (const rk of tree) pos[rk].y = rowTop[pos[rk].depth];
+
+  // Drop each anchor's quotes into its reserved gutter, stacked from its row.
+  const satPos = {};
+  for (const a in anchorSats) {
+    const gx = pos[a].x + res.gutterOffset[a];
+    let y = pos[a].y;
+    for (const s of anchorSats[a]) { satPos[s.rkey] = {x: gx, y}; y += LAY[s.rkey].h + SAT_VGAP; }
+  }
+
+  // ---- render ----
+  scene.innerHTML = "";
+  const edgeLayer = el("g", {}, scene);
+  const nodeLayer = el("g", {}, scene);
+
+  // reply edges (parent bottom → child top); grafted quote-replies are amber
+  for (const rk of tree) {
+    for (const c of treeKids[rk]) {
+      drawEdge(edgeLayer, pos[rk].x + NODE_W / 2, pos[rk].y + H(rk),
+                          pos[c].x + NODE_W / 2, pos[c].y, grafts.has(c) ? "edge graft" : "edge");
+    }
+  }
+  // quote edges within tree — arrow lands on the quoted post
+  for (const {from, to} of quoteEdges)
+    el("path", {d: quoteCurve(pos[from], pos[to], H(from), H(to)), class: "edge quoteedge"}, edgeLayer);
+  // satellite quote edges — one per link, so a shared target gets several arrows
+  for (const e of satEdges) {
+    const d = e.dir === "out"
+      ? quoteCurve(pos[e.anchor], satPos[e.sat], H(e.anchor), H(e.sat))
+      : quoteCurve(satPos[e.sat], pos[e.anchor], H(e.sat), H(e.anchor));
+    el("path", {d, class: "edge quoteedge"}, edgeLayer);
+  }
+
+  // nodes
+  for (const rk of tree) {
+    const g = grafts.has(rk);
+    const badge = g ? (INDEX[rk].tweet ? "𝕏 " + (INDEX[rk].a || "post") : "↪ quoted") : null;
+    drawNode(nodeLayer, rk, pos[rk].x, pos[rk].y, LAY[rk], rk === focus ? "focus" : "", badge, g);
+  }
+  for (const s of satNodes) {
+    const badge = INDEX[s.rkey].tweet ? "𝕏 " + (INDEX[s.rkey].a || "post")
+                          : s.dir === "out" ? "↳ quoted" : "quotes →";
+    drawNode(nodeLayer, s.rkey, satPos[s.rkey].x, satPos[s.rkey].y, LAY[s.rkey], "quote", badge, false);
+  }
+
+  // fit to every placed box (tree + satellites, which may sit left or below)
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const rk of tree) {
+    minX = Math.min(minX, pos[rk].x); minY = Math.min(minY, pos[rk].y);
+    maxX = Math.max(maxX, pos[rk].x + NODE_W); maxY = Math.max(maxY, pos[rk].y + H(rk));
+  }
+  for (const s of satNodes) {
+    const p = satPos[s.rkey];
+    minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+    maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + H(s.rkey));
+  }
+  lastPinsKey = pinsKey(); lastPos = pos; lastH = H; lastBounds = [minX, minY, maxX, maxY];
+  fitView(minX, minY, maxX, maxY);
+}
+
+// Move the .focus highlight to a node without redrawing (data-rkey set on each).
+function setFocusNode(focus) {
+  scene.querySelectorAll("g.node.focus").forEach(n => n.classList.remove("focus"));
+  const n = scene.querySelector(`g.node[data-rkey="${CSS.escape(focus)}"]`);
+  if (n) n.classList.add("focus");
+}
+
+// Pan just enough to bring a node fully into view; if it's already visible, do nothing.
+function panIntoView(focus) {
+  const p = lastPos[focus];
+  if (!p) return;
+  const h = lastH(focus), m = 40, rect = svg.getBoundingClientRect();
+  const x1 = p.x * scale + tx, y1 = p.y * scale + ty;
+  const x2 = x1 + NODE_W * scale, y2 = y1 + h * scale;
+  let dx = 0, dy = 0;
+  if (x1 < m) dx = m - x1; else if (x2 > rect.width - m) dx = rect.width - m - x2;
+  if (y1 < m) dy = m - y1; else if (y2 > rect.height - m) dy = rect.height - m - y2;
+  if (dx || dy) { tx += dx; ty += dy; applyTransform(); }
+}
+
+// Quote-edge path from box s to box d, with the arrow landing on d. One axis
+// decision (whichever centre offset is larger) picks both the facing edges and
+// the curve's bend, so the curve always enters d perpendicular to the edge it
+// touches — no arrowheads clipping into a box at 90°.
+//
+// The two endpoints are nudged oppositely *along* the edge (tail one way, head
+// the other) so an outgoing and an incoming edge on the same side don't sit on
+// top of each other — you can see which is coming and which is going.
+const EDGE_OFF = 6;
+function quoteCurve(s, d, hs, hd) {
+  const scx = s.x + NODE_W / 2, scy = s.y + hs / 2;
+  const dcx = d.x + NODE_W / 2, dcy = d.y + hd / 2;
+  let p1, p2, c1, c2;
+  if (Math.abs(dcx - scx) >= Math.abs(dcy - scy)) {           // horizontal: nudge along Y
+    p1 = {x: dcx >= scx ? s.x + NODE_W : s.x, y: scy + EDGE_OFF};
+    p2 = {x: dcx >= scx ? d.x : d.x + NODE_W, y: dcy - EDGE_OFF};
+    const mx = (p1.x + p2.x) / 2;
+    c1 = {x: mx, y: p1.y}; c2 = {x: mx, y: p2.y};
+  } else {                                                    // vertical: nudge along X
+    p1 = {x: scx + EDGE_OFF, y: dcy >= scy ? s.y + hs : s.y};
+    p2 = {x: dcx - EDGE_OFF, y: dcy >= scy ? d.y : d.y + hd};
+    const my = (p1.y + p2.y) / 2;
+    c1 = {x: p1.x, y: my}; c2 = {x: p2.x, y: my};
+  }
+  return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`;
+}
+
+function fitView(minX, minY, maxX, maxY) {
+  const rect = svg.getBoundingClientRect();
+  const w = maxX - minX, h = maxY - minY;
+  const margin = 40;
+  const s = Math.min((rect.width - margin) / w, (rect.height - margin) / h, 1.4);
+  scale = Math.max(0.05, s);
+  tx = (rect.width - w * scale) / 2 - minX * scale;
+  ty = Math.max(margin / 2, (rect.height - h * scale) / 2) - minY * scale;
+  applyTransform();
+}
+
+// ---------- interaction ----------
+let panning = false, didDrag = false, startX = 0, startY = 0, startTx = 0, startTy = 0;
+svg.addEventListener("mousedown", (e) => {
+  panning = true; didDrag = false;
+  startX = e.clientX; startY = e.clientY; startTx = tx; startTy = ty;
+  svg.classList.add("grabbing");
+});
+window.addEventListener("mousemove", (e) => {
+  if (!panning) return;
+  const dx = e.clientX - startX, dy = e.clientY - startY;
+  if (Math.abs(dx) + Math.abs(dy) > 3) didDrag = true;
+  tx = startTx + dx; ty = startTy + dy;
+  applyTransform();
+});
+window.addEventListener("mouseup", () => { panning = false; svg.classList.remove("grabbing"); });
+
+svg.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const rect = svg.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+  const ns = Math.max(0.05, Math.min(3, scale * factor));
+  tx = mx - (mx - tx) * (ns / scale);
+  ty = my - (my - ty) * (ns / scale);
+  scale = ns;
+  applyTransform();
+}, {passive: false});
+
+$("#fit").onclick = () => { if (lastBounds) fitView(...lastBounds); };
+$("#q").addEventListener("input", () => { if (Object.keys(INDEX).length) buildSidebar(); });
+const clearSearch = () => { if ($("#q").value) { $("#q").value = ""; buildSidebar(); } };
+$("#clear").onclick = clearSearch;                       // back to the full thread list
+$("#q").addEventListener("keydown", (e) => { if (e.key === "Escape") { clearSearch(); $("#q").blur(); } });
+// Back/Forward (popstate) and manual hash edits (hashchange) re-render without
+// pushing a new entry. Both fire on history moves; the rk !== FOCUS guard makes
+// the second a no-op.
+const showFromHash = () => {
+  const v = parseHash();
+  if (!v) return;
+  if (v.focus === FOCUS && v.pins.join("|") === pinsKey()) return;
+  FOCUS = v.focus; PINS = v.pins; render(v.focus);   // history move: restore without re-pushing
+};
+window.addEventListener("popstate", showFromHash);
+window.addEventListener("hashchange", showFromHash);
+load();   // module is deferred, so the DOM is ready
+</script>
+</body>
+</html>
