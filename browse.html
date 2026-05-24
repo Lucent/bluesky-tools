@@ -4,81 +4,83 @@
 <meta charset="utf-8">
 <title>Thread Browser</title>
 <style>
-  :root { color-scheme: light; }
+  /* light-dark() follows the system preference via color-scheme: light dark.
+     Each value is light-dark(<light>, <dark>). Targets modern browsers. */
+  :root { color-scheme: light dark; }
   html, body { height: 100%; margin: 0; }
   body {
     font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    color: #222; background: #fafaf7;
+    color: light-dark(#222, #e6e6e0); background: light-dark(#fafaf7, #1a1a18);
     display: flex; flex-direction: column;
   }
   header {
     display: flex; gap: 0.5em 0.8em; align-items: center; flex-wrap: wrap;
-    padding: 0.4em 0.8em; border-bottom: 1px solid #ddd; background: #fff;
+    padding: 0.4em 0.8em; border-bottom: 1px solid light-dark(#ddd, #34342f); background: light-dark(#fff, #232320);
     flex: 0 0 auto;
   }
   header input { width: 12em; padding: 0.3em 0.5em; font: inherit; }
   header button { padding: 0.3em 0.8em; font: inherit; cursor: pointer; }
   #avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
   #account { display: flex; flex-direction: column; line-height: 1.2; margin-right: auto; }
-  #acctName { font-weight: 600; color: #1a1a1a; }
-  #acctName a { color: #2a8c57; text-decoration: none; font-weight: 500; }
+  #acctName { font-weight: 600; color: light-dark(#1a1a1a, #f0f0ea); }
+  #acctName a { color: light-dark(#2a8c57, #4fce8b); text-decoration: none; font-weight: 500; }
   #acctName a:hover { text-decoration: underline; }
   #searchbox { display: inline-flex; gap: 0.3em; align-items: center; }
-  #acctDesc { font-size: 0.8em; color: #888; }
-  #help { color: #999; font-size: 0.78em; }
-  #status { color: #888; font-size: 0.85em; }
+  #acctDesc { font-size: 0.8em; color: light-dark(#888, #9a9a90); }
+  #help { color: light-dark(#999, #807e76); font-size: 0.78em; }
+  #status { color: light-dark(#888, #9a9a90); font-size: 0.85em; }
 
   main { flex: 1 1 auto; display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
   aside {
     font-size: 0.85em; overflow-y: auto;
-    padding: 0.5em; border-right: 1px solid #eee; background: #fff;
+    padding: 0.5em; border-right: 1px solid light-dark(#eee, #2c2c28); background: light-dark(#fff, #232320);
   }
-  aside h3 { margin: 0.2em 0 0.5em; font-size: 0.8em; color: #555; text-transform: uppercase; letter-spacing: 0.05em; }
-  aside .item { padding: 0.4em 0.3em; cursor: pointer; border-bottom: 1px solid #f1f1ec; }
-  aside .item:hover { background: #f3f3ee; }
-  aside .item.active { background: #fff3da; }
-  aside .item .meta { color: #999; font-size: 0.85em; }
-  aside .item .snip { color: #333; }
-  aside .item mark { background: #fff3c4; color: inherit; padding: 0 1px; border-radius: 2px; }
+  aside h3 { margin: 0.2em 0 0.5em; font-size: 0.8em; color: light-dark(#555, #a8a89e); text-transform: uppercase; letter-spacing: 0.05em; }
+  aside .item { padding: 0.4em 0.3em; cursor: pointer; border-bottom: 1px solid light-dark(#f1f1ec, #2c2c28); }
+  aside .item:hover { background: light-dark(#f3f3ee, #2c2c29); }
+  aside .item.active { background: light-dark(#fff3da, #3a3320); }
+  aside .item .meta { color: light-dark(#999, #807e76); font-size: 0.85em; }
+  aside .item .snip { color: light-dark(#333, #cfcfc8); }
+  aside .item mark { background: light-dark(#fff3c4, #5c4a12); color: inherit; padding: 0 1px; border-radius: 2px; }
 
   #view { position: relative; min-width: 0; min-height: 0; }
   #graph { width: 100%; height: 100%; display: block; cursor: grab; background:
-    repeating-linear-gradient(0deg,#f4f4ef 0 1px,transparent 1px 26px),
-    repeating-linear-gradient(90deg,#f4f4ef 0 1px,transparent 1px 26px), #fafaf7; }
+    repeating-linear-gradient(0deg,light-dark(#f4f4ef,#26261f) 0 1px,transparent 1px 26px),
+    repeating-linear-gradient(90deg,light-dark(#f4f4ef,#26261f) 0 1px,transparent 1px 26px), light-dark(#fafaf7,#1a1a18); }
   #graph.grabbing { cursor: grabbing; }
 
-  .node rect { fill: #fff; stroke: #c9c9c0; stroke-width: 1.2; rx: 6; }
-  .node:hover rect { stroke: #2a9d6a; }
-  .node.focus rect { fill: #fffbef; stroke: #f4a127; stroke-width: 2; }
-  .node.quote rect { fill: #f6f5ef; stroke-dasharray: 4 3; }
-  .node.tweet rect { fill: #eef6fc; stroke: #9ccdf0; }   /* light Twitter blue */
-  .node .date { fill: #999; font-size: 10px; }
+  .node rect { fill: light-dark(#fff, #272723); stroke: light-dark(#c9c9c0, #46463f); stroke-width: 1.2; rx: 6; }
+  .node:hover rect { stroke: light-dark(#2a9d6a, #3fbf85); }
+  .node.focus rect { fill: light-dark(#fffbef, #34301d); stroke: #f4a127; stroke-width: 2; }
+  .node.quote rect { fill: light-dark(#f6f5ef, #2a2a24); stroke-dasharray: 4 3; }
+  .node.tweet rect { fill: light-dark(#eef6fc, #16242e); stroke: light-dark(#9ccdf0, #3a6f93); }   /* Twitter blue */
+  .node .date { fill: light-dark(#999, #807e76); font-size: 10px; }
   .node a .date.link { cursor: pointer; }
-  .node a:hover .date.link { fill: #2a8c57; text-decoration: underline; }
-  .node .body { fill: #222; font-size: 12px; }
-  .node .badge { fill: #2a9d6a; font-size: 10px; }
-  .node .lnk { fill: #2a8c57; text-decoration: underline; }
-  .node .men, .node .tag { fill: #3a72c4; }
+  .node a:hover .date.link { fill: light-dark(#2a8c57, #4fce8b); text-decoration: underline; }
+  .node .body { fill: light-dark(#222, #e2e2dc); font-size: 12px; }
+  .node .badge { fill: light-dark(#2a9d6a, #3fbf85); font-size: 10px; }
+  .node .lnk { fill: light-dark(#2a8c57, #4fce8b); text-decoration: underline; }
+  .node .men, .node .tag { fill: light-dark(#3a72c4, #6fa8ee); }
   .node text.foot { font-size: 10.5px; }
-  .node .clink { fill: #2a8c57; }
-  .node .cmedia { fill: #999; }
-  .node .dbl { fill: none; stroke: #c79a4a; stroke-width: 1; }
-  .node .imgframe { fill: #eeede5; stroke: #d4d2c5; stroke-width: 1; }
-  .node .imgcap { fill: #6f6f64; font-size: 11px; }
-  .node .imgcap .ic { fill: #aeab9c; }
+  .node .clink { fill: light-dark(#2a8c57, #4fce8b); }
+  .node .cmedia { fill: light-dark(#999, #807e76); }
+  .node .dbl { fill: none; stroke: light-dark(#c79a4a, #d4af5f); stroke-width: 1; }
+  .node .imgframe { fill: light-dark(#eeede5, #2d2d27); stroke: light-dark(#d4d2c5, #46463f); stroke-width: 1; }
+  .node .imgcap { fill: light-dark(#6f6f64, #a0a094); font-size: 11px; }
+  .node .imgcap .ic { fill: light-dark(#aeab9c, #77756a); }
   .node { cursor: pointer; }
 
-  .edge { fill: none; stroke: #b9b9ae; stroke-width: 1.4; }
-  .edge.quoteedge { stroke: #c79a4a; stroke-dasharray: 5 4; marker-end: url(#qarrow); }
-  .edge.graft { stroke: #c79a4a; }
+  .edge { fill: none; stroke: light-dark(#b9b9ae, #565650); stroke-width: 1.4; }
+  .edge.quoteedge { stroke: light-dark(#c79a4a, #d4af5f); stroke-dasharray: 5 4; marker-end: url(#qarrow); }
+  .edge.graft { stroke: light-dark(#c79a4a, #d4af5f); }
 
   #legend {
     position: absolute; left: 10px; bottom: 10px;
-    background: rgba(255,255,255,0.9); border: 1px solid #e3e3da; border-radius: 5px;
-    padding: 0.3em 0.6em; font-size: 0.78em; color: #666;
+    background: light-dark(rgba(255,255,255,0.9), rgba(30,30,26,0.9)); border: 1px solid light-dark(#e3e3da, #3a3a34); border-radius: 5px;
+    padding: 0.3em 0.6em; font-size: 0.78em; color: light-dark(#666, #9a9a90);
   }
   #legend svg { vertical-align: middle; }
-  .hint { position: absolute; inset: 0; display: grid; place-items: center; color: #999; padding: 2em; text-align: center; }
+  .hint { position: absolute; inset: 0; display: grid; place-items: center; color: light-dark(#999, #807e76); padding: 2em; text-align: center; }
 </style>
 </head>
 <body>
@@ -287,16 +289,17 @@ function sidebarItem(rk, goto, metaText, mark) {
 // bsky.app), and the profile description.
 function populateHeader() {
   const m = META;
-  // Plain display name, then "(@handle)" where only the @handle links to bsky.
+  // Display name links to the profile via DID. Handles aren't recorded in the
+  // archive, but bsky.app/profile/<did> resolves fine.
   const a = $("#acctName");
-  a.textContent = m.name || "(account)";
-  if (m.handle) {
-    a.append(" (");
+  if (DID) {
     const lk = document.createElement("a");
-    lk.href = `https://bsky.app/profile/${m.handle}`;
+    lk.href = `https://bsky.app/profile/${DID}`;
     lk.target = "_blank"; lk.rel = "noopener";
-    lk.textContent = "@" + m.handle;
-    a.append(lk, ")");
+    lk.textContent = m.name || "(account)";
+    a.append(lk);
+  } else {
+    a.textContent = m.name || "(account)";
   }
   $("#acctDesc").textContent = m.desc || "";
   const av = $("#avatar");

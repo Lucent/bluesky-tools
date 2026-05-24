@@ -1,3 +1,5 @@
 did:plc:*/
 *.jsonl
 *.car
+.env
+index.json
