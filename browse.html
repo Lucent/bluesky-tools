@@ -137,7 +137,7 @@ const SVGNS = "http://www.w3.org/2000/svg";
 // Quoted tweets are real entries keyed "x:<rkey>" with { tweet:true, u, t, a }.
 let INDEX = {};
 let DID = "";          // repo DID, for building bsky.app permalinks
-let META = {};         // account profile: {name, desc, handle, avatar}
+let META = {};         // account profile: {name, desc, avatar?}
 let PINS = [];         // pinned thread roots shown together (ctrl+click merges threads)
 // Cache of the last full render so a click within the same pinned set can just
 // move the highlight + pan, instead of re-laying-out and re-fitting the view.
@@ -168,20 +168,12 @@ function applyTransform() {
 // ---------- data loading ----------
 async function load(src = "index.json") {
 	setStatus("Loading " + src + "…");
-	let data;
-	try {
-		const r = await fetch(src);
-		if (!r.ok) throw new Error("HTTP " + r.status);
-		data = await r.json();
-	} catch (e) {
-		setStatus("Load failed: " + e.message);
-		$("#hint").style.display = "grid";
-		$("#hint").innerHTML = `Couldn't load <code>${src}</code>. Build it with:<br><br><code>python3 thread_browser.py &lt;did:plc:…&gt; --serve</code>`;
-		return;
-	}
-	INDEX = data.posts || data;            // {did, meta, posts} payload (or a bare map)
-	DID = data.did || "";
-	META = data.meta || {};
+	const r = await fetch(src);
+	if (!r.ok) throw new Error("HTTP " + r.status + " loading " + src);
+	const data = await r.json();
+	INDEX = data.posts;                    // {did, meta, posts} payload
+	DID = data.did;
+	META = data.meta;
 	populateHeader();
 	buildGraph();
 	buildSidebar();
@@ -255,7 +247,7 @@ function descendantCount(rkey, seen) {
 }
 
 function topThreads() {
-	const score = (r) => descendantCount(r) + (quotedBy[r] ? quotedBy[r].length : 0);
+	const score = (r) => descendantCount(r) + quotedBy[r].length;
 	return Object.keys(INDEX)
 		.filter(r => isLocalRoot(r) && !isNoise(r) && !INDEX[r].tweet)
 		.map(r => ({rkey: r, s: score(r), d: INDEX[r].d || ""}))
@@ -290,30 +282,24 @@ function sidebarItem(rk, goto, metaText, mark) {
 	return li;
 }
 
-// Fill the header with the account: avatar, display name, @handle (linked to
-// bsky.app), and the profile description.
+// Fill the header with the account: avatar, display name (linked to bsky.app),
+// and the profile description.
 function populateHeader() {
 	const m = META;
-	// Plain display name, then "(@handle)" where only the @handle links to bsky.
-	const a = $("#acctName");
-	a.textContent = m.name || "(account)";
-	if (m.handle) {
-		a.append(" (");
-		const lk = document.createElement("a");
-		lk.href = `https://bsky.app/profile/${m.handle}`;
-		lk.target = "_blank";
-		lk.textContent = "@" + m.handle;
-		a.append(lk, ")");
-	}
-	$("#acctDesc").textContent = m.desc || "";
+	// Display name links to the profile via DID (handles aren't recorded in the
+	// archive, but bsky.app/profile/<did> resolves fine).
+	const lk = document.createElement("a");
+	lk.href = `https://bsky.app/profile/${DID}`;
+	lk.target = "_blank"; lk.rel = "noopener";
+	lk.textContent = m.name;
+	$("#acctName").append(lk);
+	$("#acctDesc").textContent = m.desc;
 	const av = $("#avatar");
-	if (m.avatar && DID) {
+	if (m.avatar) {                        // optional — the <img> starts hidden
 		av.src = `https://cdn.bsky.app/img/avatar_thumbnail/plain/${DID}/${m.avatar}@jpeg`;
 		av.hidden = false;
-	} else {
-		av.hidden = true;
 	}
-	document.title = (m.name || m.handle || "Thread") + " — Thread Browser";
+	document.title = m.name + " — Thread Browser";
 }
 
 function heading(text) {
@@ -325,7 +311,7 @@ function heading(text) {
 function buildSidebar() {
 	const sb = $("#sidebar");
 	sb.innerHTML = "";
-	const q = ($("#q").value || "").trim().toLowerCase();
+	const q = $("#q").value.trim().toLowerCase();
 	const ul = document.createElement("ul");
 
 	if (q) {                                    // search: list the matching posts themselves
@@ -420,8 +406,7 @@ function wrapSegs(segs) {
 }
 
 function domain(u) {
-	try { return new URL(u).hostname.replace(/^www\./, ""); }
-	catch { return (u || "").slice(0, 22); }
+	return new URL(u).hostname.replace(/^www\./, "");
 }
 
 // Footer chips for attachments with no inline representation. Inline facet
@@ -668,7 +653,7 @@ function drawNode(parent, rkey, x, y, lay, cls, badge, dbl) {
 
 	// date — links to the real bsky.app post (skip tweet nodes, which have no date)
 	const dstr = (e.d || "").slice(0, 10);
-	if (dstr && DID && !e.tweet) {
+	if (dstr && !e.tweet) {
 		const a = el("a", {href: `https://bsky.app/profile/${DID}/post/${rkey}`,
 											 target: "_blank", rel: "noopener"}, g);
 		const date = el("text", {x: PAD, y: DATE_Y, class: "date link"}, a);
