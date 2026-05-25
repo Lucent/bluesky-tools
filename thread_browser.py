@@ -6,7 +6,6 @@ in lockstep with the other tools.
 """
 
 import argparse
-import glob
 import http.server
 import json
 import os
@@ -64,20 +63,6 @@ def tweet_node(ext, uri):
     return node
 
 
-def detect_handle(script_dir):
-    """Best-effort handle: the toolchain writes <handle>.jsonl / <handle>.txt
-    next to this script, so a unique domain-like stem there is the handle."""
-    for pattern in ("*.jsonl", "*.txt"):
-        cands = set()
-        for path in glob.glob(os.path.join(script_dir, pattern)):
-            stem = os.path.basename(path).rsplit(".", 1)[0]
-            if "." in stem and not stem.startswith("did:"):
-                cands.add(stem)
-        if len(cands) == 1:
-            return next(iter(cands))
-    return ""
-
-
 def read_profile(directory):
     """Pull display name / description / avatar from the actor profile record."""
     path = os.path.join(directory, "app.bsky.actor.profile", "self.json")
@@ -92,20 +77,34 @@ def read_profile(directory):
     return meta
 
 
-def build_index(posts):
+def parent_uri(post):
+    """Full AT-URI of the post this one replies to, or None."""
+    reply = post.get("reply") or {}
+    parent = reply.get("parent") or {}
+    return parent.get("uri") or None
+
+
+def build_index(posts, repo_did=""):
     """Return a compact dict[rkey] -> entry suitable for the JS browser.
 
     Keys are short to keep the wire size down on big archives:
       t   text
       d   createdAt
       p   parent rkey (if any reply)
+      xp  parent author DID, only when the reply targets someone *else's* post
+          (so the browser can fetch that one post from the public API on demand
+          and show it as the thread's external root)
+      xr  thread root rkey, set alongside xp — lets the browser group every one
+          of our posts that share an external thread onto a single graph
+      xrd thread root author DID, when the root isn't ours (so the root post can
+          be fetched too)
       q   list of quoted rkeys (embed quotes + faceted post-links + tweet nodes)
       f   raw facets; post-links and tweet-links are stripped
 
     Quoted tweets become synthetic nodes keyed "x:<rkey>" with {tweet, u, t, a}
     so the browser treats them like any other quote target.
-      img number of attached images
-      alt image alt strings (skipped if all empty)
+      img attached images: list of {"c": blob CID, "a": alt?}
+          — the browser builds a cdn.bsky.app image URL from the CID + DID
       ext {"u": uri, "t": title, "d": description} for external embed cards
       vid true if the embed is a video
     """
@@ -120,6 +119,22 @@ def build_index(posts):
         par = parent_rkey(post)
         if par:
             entry["p"] = par
+            # A reply whose parent we don't hold is either a deleted own post or,
+            # if the parent's DID isn't ours, someone else's post. Flag the latter
+            # with its author DID so the browser can pull that one post on demand.
+            if par not in known_rkeys:
+                puri = parent_uri(post) or ""
+                pdid = puri.split("/")[2] if puri.startswith("at://") else ""
+                if pdid and pdid != repo_did:
+                    entry["xp"] = pdid
+                # Record the thread root too, so the browser can group all of our
+                # posts in the same outside thread onto one graph.
+                ruri = ((post.get("reply") or {}).get("root") or {}).get("uri") or ""
+                if ruri.startswith("at://"):
+                    rparts = ruri.split("/")
+                    entry["xr"] = rparts[-1]
+                    if rparts[2] != repo_did:
+                        entry["xrd"] = rparts[2]
         quotes = list(quoted_rkeys(post))
 
         # Walk facets: a link to one of our posts is really a quote; a link to
@@ -150,11 +165,17 @@ def build_index(posts):
             kind = media.get("$type")
 
         if kind == "app.bsky.embed.images":
-            imgs = media.get("images", [])
-            entry["img"] = len(imgs)
-            alts = [img.get("alt", "") for img in imgs]
-            if any(alts):
-                entry["alt"] = alts
+            images = []
+            for img in media.get("images", []):
+                cid = (((img.get("image") or {}).get("ref") or {}).get("$link"))
+                if not cid:
+                    continue
+                rec = {"c": cid}
+                if img.get("alt"):
+                    rec["a"] = img["alt"]
+                images.append(rec)
+            if images:
+                entry["img"] = images
         elif kind == "app.bsky.embed.external":
             ext = media.get("external", {})
             uri = ext.get("uri", "")
@@ -208,21 +229,19 @@ def main():
     posts = read_posts(args.directory)
     print(f"Loaded {len(posts)} posts", file=sys.stderr)
 
-    index = build_index(posts)
     # The DID folder is named after the DID; the browser uses it to link each
-    # post to its real bsky.app permalink.
+    # post to its real bsky.app permalink, and build_index uses it to tell our
+    # own (deleted) parents apart from genuinely external ones.
     did = os.path.basename(os.path.normpath(args.directory))
     if not did.startswith("did:"):
         did = ""
+
+    index = build_index(posts, repo_did=did)
     meta = read_profile(args.directory)
-    handle = detect_handle(script_dir)
-    if handle:
-        meta["handle"] = handle
     payload = {"did": did, "meta": meta, "posts": index}
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, separators=(",", ":"), ensure_ascii=False)
-    who = meta.get("handle") or meta.get("name") or "?"
-    print(f"Wrote {out_path} ({len(index)} entries, {who})", file=sys.stderr)
+    print(f"Wrote {out_path} ({len(index)} entries, {meta.get('name') or '?'})", file=sys.stderr)
 
     if args.serve is not None:
         os.chdir(script_dir)

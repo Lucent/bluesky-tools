@@ -3,20 +3,32 @@ services:
     image: python:3.12-slim
     container_name: thread-browser
     restart: unless-stopped
+    # Run as the host user (uid:gid 1000) rather than root, so nothing the
+    # container writes to a shared path is ever left root-owned. The repo mount
+    # is read-only and the build output lives in a container-only dir anyway,
+    # but this keeps it true regardless of future changes.
+    user: "1000:1000"
     working_dir: /app
     # The repo is mounted read-only purely as build input (scripts + the DID
     # archive). thread_browser.py and thread_graph.py are pure stdlib, so the
     # stock image runs them with no build step.
     volumes:
       - ./:/app:ro
+      # The build output (index.json + index.html) is regenerated on every start
+      # and never needs to persist, so give it a writable in-memory mount. mode
+      # 1777 (world-writable, sticky — like /tmp) lets the non-root user above
+      # write to it no matter how the container is (re)created.
+      - type: tmpfs
+        target: /site
+        tmpfs:
+          mode: 01777
     environment:
       - PYTHONUNBUFFERED=1
     # Build the two files the browser actually needs into a container-only dir
     # and serve just that, so the repo (.env, .car, .jsonl, .git) is never
     # exposed. browse.html is served as index.html so the site root loads it.
     command: >
-      sh -c "mkdir -p /site &&
-             python thread_browser.py did:plc:djgpkjnin4mg2b56pal7kwqh --out /site/index.json &&
+      sh -c "python thread_browser.py ${ARCHIVE_DID} --out /site/index.json &&
              cp browse.html /site/index.html &&
              cd /site && exec python -m http.server 8000"
 
