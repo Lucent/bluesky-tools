@@ -131,10 +131,12 @@
 	<section id="view">
 		<svg id="graph">
 			<defs>
-				<marker id="qarrow" viewBox="0 0 10 10" refX="9" refY="5"
-								markerWidth="8" markerHeight="8" orient="auto">
-					<!-- context-stroke: arrowhead inherits each edge's own stroke colour -->
-					<path d="M0,0 L10,5 L0,10 z" fill="context-stroke"/>
+				<marker id="qarrow" viewBox="0 0 9 8" refX="8" refY="4"
+								markerWidth="9" markerHeight="8" orient="auto">
+					<!-- small open chevron, stroked at the edge's own width (markerUnits=strokeWidth)
+					     so the head matches the line; context-stroke inherits the edge colour. -->
+					<path d="M1,1 L8,4 L1,7" fill="none" stroke="context-stroke"
+								stroke-width="1" stroke-linecap="round" stroke-linejoin="round"/>
 				</marker>
 			</defs>
 			<g id="scene"></g>
@@ -148,6 +150,9 @@
 	</section>
 </main>
 
+<!-- Vendored d3-flextree (non-layered tidy-tree layout, van der Ploeg). Plain
+     script so it sets window.d3.flextree before the deferred module runs. -->
+<script src="flextree.js"></script>
 <script type="module">
 // ES module: strict by default, module-scoped (no globals leak), and deferred —
 // so the DOM is already parsed when this runs.
@@ -578,110 +583,6 @@ function buildVisible(pins) {
 	return {tree, quoteEdges, satNodes: Object.values(satNodeMap), satEdges, treeKids, grafts};
 }
 
-// Contour-based tidy tree (Reingold–Tilford style): each subtree is packed as
-// close to its left sibling as its actual silhouette allows, per depth — so a
-// shallow branch sits right next to a deep/wide neighbour instead of being
-// shoved aside by raw leaf counts. Only x/depth are set here; y comes from rows.
-//
-// `res` (optional) reserves a quote gutter beside chosen anchors: res.span[rk]
-// = how many rows the anchor's quote stack spans, res.side[rk] = "L"|"R". The
-// gutter is baked into the node's contour so the tree relaxes to clear it, and
-// res.gutterOffset[rk] (x of the gutter relative to the node) is filled in for
-// placement. Pass res=null for a plain pass.
-function layoutTree(root, tree, treeKids, res) {
-	const pos = {};
-	const SEP = NODE_W + H_GAP;
-	const kidsOf = (rk) => treeKids[rk] || [];
-	const shift = (rk, dx) => { pos[rk].x += dx; for (const c of kidsOf(rk)) shift(c, dx); };
-
-	// Widen one side's contour to fit the anchor's quote gutter over its row span.
-	function reserve(rk, cx, left, right) {
-		const k = res.span[rk];
-		if (res.side[rk] === "R") {
-			let edge = -Infinity;
-			for (let i = 0; i <= Math.min(k, right.length - 1); i++) edge = Math.max(edge, right[i] + NODE_W);
-			const satLeft = edge + SAT_GAP;
-			res.gutterOffset[rk] = satLeft - cx;
-			for (let i = 0; i <= k; i++) {
-				if (i < right.length) right[i] = Math.max(right[i], satLeft);
-				else { right.push(satLeft); left.push(satLeft); }
-			}
-		} else {
-			let edge = Infinity;
-			for (let i = 0; i <= Math.min(k, left.length - 1); i++) edge = Math.min(edge, left[i]);
-			const satLeft = edge - SAT_GAP - NODE_W;
-			res.gutterOffset[rk] = satLeft - cx;
-			for (let i = 0; i <= k; i++) {
-				if (i < left.length) left[i] = Math.min(left[i], satLeft);
-				else { left.push(satLeft); right.push(satLeft); }
-			}
-		}
-	}
-
-	// returns left/right contours (x per relative depth, 0 = this node)
-	function build(rk, depth) {
-		const kids = kidsOf(rk);
-		let cx, left, right;
-		if (!kids.length) {
-			cx = 0; left = [0]; right = [0];
-		} else {
-			const childC = [];
-			let acc = null;                            // running right contour of placed siblings
-			for (let i = 0; i < kids.length; i++) {
-				const c = build(kids[i], depth + 1);
-				if (i === 0) { childC.push(c); acc = c.right.slice(); continue; }
-				let s = 0;                               // shift needed so this child clears its left siblings
-				const common = Math.min(acc.length, c.left.length);
-				for (let d = 0; d < common; d++) s = Math.max(s, acc[d] + SEP - c.left[d]);
-				shift(kids[i], s);
-				const cl = c.left.map(v => v + s), cr = c.right.map(v => v + s);
-				childC.push({left: cl, right: cr});
-				for (let d = 0; d < cr.length; d++) { if (d < acc.length) acc[d] = cr[d]; else acc.push(cr[d]); }
-			}
-			cx = (pos[kids[0]].x + pos[kids[kids.length - 1]].x) / 2;
-			left = [cx]; right = [cx];
-			let maxLen = 0;
-			for (const c of childC) maxLen = Math.max(maxLen, c.left.length);
-			for (let d = 0; d < maxLen; d++) {
-				let lo = Infinity, hi = -Infinity;
-				for (const c of childC) {
-					if (d < c.left.length) lo = Math.min(lo, c.left[d]);
-					if (d < c.right.length) hi = Math.max(hi, c.right[d]);
-				}
-				left.push(lo); right.push(hi);
-			}
-		}
-		pos[rk] = {x: cx, depth};
-		if (res && res.span[rk] != null) reserve(rk, cx, left, right);
-		return {left, right};
-	}
-
-	build(root, 0);
-	return pos;                                    // raw coords; layoutForest places & offsets
-}
-
-// Lay each pinned thread out independently and stack them left-to-right (gutters
-// included in each tree's extent), so a merged view shows the threads as
-// adjacent trees joined by their quote edges.
-function layoutForest(pins, tree, treeKids, res) {
-	const pos = {};
-	let cursor = 0;
-	for (const root of pins) {
-		const sub = layoutTree(root, tree, treeKids, res);
-		let lo = Infinity, hi = -Infinity;
-		for (const k in sub) { lo = Math.min(lo, sub[k].x); hi = Math.max(hi, sub[k].x + NODE_W); }
-		if (res) for (const k in sub) {              // include reserved quote gutters in the extent
-			const off = res.gutterOffset[k];
-			if (off == null) continue;
-			lo = Math.min(lo, sub[k].x + off); hi = Math.max(hi, sub[k].x + off + NODE_W);
-		}
-		const dx = cursor - lo;
-		for (const k in sub) pos[k] = {x: sub[k].x + dx, depth: sub[k].depth};
-		cursor = hi + dx + FOREST_GAP;
-	}
-	return pos;
-}
-
 // ---------- SVG drawing ----------
 function el(tag, attrs, parent) {
 	const n = document.createElementNS(SVGNS, tag);
@@ -895,70 +796,64 @@ function render(focus) {
 	for (const rk of tree) LAY[rk] = nodeLayout(rk);
 	for (const s of satNodes) if (!LAY[s.rkey]) LAY[s.rkey] = nodeLayout(s.rkey);
 
-	// Pass 1: provisional layout (no quote gutters) → positions + depths.
-	const pos1 = layoutForest(PINS, tree, treeKids, null);
+	// Quote satellites split by direction so a post can use both gutters: incoming
+	// quotes (posts that quote this one) stack to its left, outgoing quotes (posts
+	// or tweets this one quotes) to its right. A gutter is reserved per populated side.
+	const satsIn = {}, satsOut = {};
+	for (const s of satNodes) {
+		const m = s.dir === "in" ? satsIn : satsOut;
+		(m[s.anchor] || (m[s.anchor] = [])).push(s);
+	}
+	const stackH = (list) => list && list.length ? list.reduce((a, s) => a + LAY[s.rkey].h, 0) + SAT_VGAP * (list.length - 1) : 0;
+	const gutterW = (list) => list && list.length ? SAT_GAP + NODE_W : 0;
+	const leftG = (rk) => gutterW(satsIn[rk]);
+	const allocW = (rk) => leftG(rk) + NODE_W + gutterW(satsOut[rk]);
+	const rowH = (rk) => Math.max(H(rk), stackH(satsIn[rk]), stackH(satsOut[rk]));
 
-	// Rows: each depth's top = sum of taller rows above it, so variable-height
-	// boxes never overlap vertically while siblings stay aligned. (depth + height
-	// are fixed, so these rows are final and survive pass 2.)
-	let maxDepth = 0;
-	for (const rk of tree) maxDepth = Math.max(maxDepth, pos1[rk].depth);
-	const depthH = new Array(maxDepth + 1).fill(0);
-	for (const rk of tree) depthH[pos1[rk].depth] = Math.max(depthH[pos1[rk].depth], H(rk));
-	const rowTop = new Array(maxDepth + 1);
-	for (let d = 0, acc = 0; d <= maxDepth; d++) { rowTop[d] = acc; acc += depthH[d] + V_GAP; }
+	// Lay each pinned thread as a non-layered tidy tree (flextree: children sit a
+	// fixed distance below their parent, packed by contour — no global depth rows),
+	// then stack the pins left-to-right into a forest.
+	const fl = window.d3.flextree()
+		.nodeSize(d => [allocW(d.data.rk), rowH(d.data.rk) + V_GAP])
+		.spacing(() => H_GAP);
+	const toData = (rk) => ({rk, children: treeKids[rk].map(toData)});
+	const cxy = {}, laneOf = {};                 // flextree centres (forest-offset) + pin index per node
+	let cursor = 0;
+	PINS.forEach((root, pi) => {
+		const t = fl.hierarchy(toData(root));
+		fl(t);
+		let lo = Infinity, hi = -Infinity;
+		t.each(n => { const w = allocW(n.data.rk); lo = Math.min(lo, n.x - w / 2); hi = Math.max(hi, n.x + w / 2); });
+		const dx = cursor - lo;
+		t.each(n => { cxy[n.data.rk] = {x: n.x + dx, y: n.y}; laneOf[n.data.rk] = pi; });
+		cursor = hi + dx + FOREST_GAP;
+	});
 
-	// Group quotes by anchor; pick the outward side (fan away from tree centre)
-	// and the row span each quote stack covers, using pass-1 positions + rows.
-	const anchorSats = {};
-	for (const s of satNodes) (anchorSats[s.anchor] || (anchorSats[s.anchor] = [])).push(s);
-	let cMin = Infinity, cMax = -Infinity;
-	for (const rk of tree) { cMin = Math.min(cMin, pos1[rk].x); cMax = Math.max(cMax, pos1[rk].x + NODE_W); }
-	const center = (cMin + cMax) / 2;
-	const side = {}, span = {};
-	for (const a in anchorSats) {
-		side[a] = (pos1[a].x + NODE_W / 2) < center ? "L" : "R";
-		let hsum = 0;
-		anchorSats[a].forEach((s, i) => { hsum += LAY[s.rkey].h + (i ? SAT_VGAP : 0); });
-		const d = pos1[a].depth, yBottom = rowTop[d] + hsum;
-		let k = 0;
-		while (d + k + 1 <= maxDepth && rowTop[d + k + 1] < yBottom) k++;
-		span[a] = k;
+	// Slide each merged lane vertically so its quote link lines up with the post it
+	// branches from (lanes are in separate horizontal bands, so this can't collide).
+	for (let i = 1; i < PINS.length; i++) {
+		const link = quoteEdges.find(e =>
+			(laneOf[e.from] === i && laneOf[e.to] < i) || (laneOf[e.to] === i && laneOf[e.from] < i));
+		if (!link) continue;
+		const mine = laneOf[link.from] === i ? link.from : link.to;
+		const dy = cxy[mine === link.from ? link.to : link.from].y - cxy[mine].y;
+		if (dy) for (const rk of tree) if (laneOf[rk] === i) cxy[rk].y += dy;
 	}
 
-	// Pass 2: re-layout reserving each anchor's gutter, so the tree relaxes around
-	// the quotes. Rows are unchanged (depths fixed), so reuse rowTop for y.
-	const res = {side, span, gutterOffset: {}};
-	const pos = layoutForest(PINS, tree, treeKids, res);
-	for (const rk of tree) pos[rk].y = rowTop[pos[rk].depth];
-
-	// Slide each merged lane vertically so its quote connection lines up with the
-	// post it branches from, instead of every tree starting at the top row. Lanes
-	// sit in separate horizontal bands (FOREST_GAP), so a vertical shift can't
-	// collide. Process in pin order so a lane anchors to an already-placed one.
-	if (PINS.length > 1) {
-		const laneOf = {};
-		PINS.forEach((root, i) => (function walk(rk) {
-			if (laneOf[rk] !== undefined) return;
-			laneOf[rk] = i;
-			for (const c of treeKids[rk]) walk(c);
-		})(root));
-		for (let i = 1; i < PINS.length; i++) {
-			const link = quoteEdges.find(e =>
-				(laneOf[e.from] === i && laneOf[e.to] < i) || (laneOf[e.to] === i && laneOf[e.from] < i));
-			if (!link) continue;
-			const mine = laneOf[link.from] === i ? link.from : link.to;   // endpoint in this lane
-			const dy = pos[mine === link.from ? link.to : link.from].y - pos[mine].y;
-			if (dy) for (const rk of tree) if (laneOf[rk] === i) pos[rk].y += dy;
-		}
-	}
-
-	// Drop each anchor's quotes into its reserved gutter, stacked from its row.
-	const satPos = {};
-	for (const a in anchorSats) {
-		const gx = pos[a].x + res.gutterOffset[a];
-		let y = pos[a].y;
-		for (const s of anchorSats[a]) { satPos[s.rkey] = {x: gx, y}; y += LAY[s.rkey].h + SAT_VGAP; }
+	// Convert centres → top-left boxes; drop each satellite stack into its gutter,
+	// vertically centred on the post (incoming left, outgoing right).
+	const pos = {}, satPos = {};
+	const stackInto = (list, x, cy) => {
+		if (!list) return;
+		let y = cy - stackH(list) / 2;
+		for (const s of list) { satPos[s.rkey] = {x, y}; y += LAY[s.rkey].h + SAT_VGAP; }
+	};
+	for (const rk of tree) {
+		const c = cxy[rk], boxLeft = c.x - allocW(rk) / 2, postLeft = boxLeft + leftG(rk);
+		const mid = c.y + (rowH(rk) + V_GAP) / 2;                  // flextree's y is the box top; centre content in the row
+		pos[rk] = {x: postLeft, y: mid - H(rk) / 2};
+		stackInto(satsIn[rk], boxLeft, mid);                       // left gutter
+		stackInto(satsOut[rk], postLeft + NODE_W + SAT_GAP, mid);  // right gutter
 	}
 
 	// ---- render ----
@@ -1124,35 +1019,50 @@ function panIntoView(focus) {
 	if (dx || dy) { tx += dx; ty += dy; applyTransform(); }
 }
 
-// Quote-edge path from box s to box d, with the arrow landing on d. The control
-// arms run along the actual p1→p2 connector (with a gentle bow), so the edge
-// always flows p1→p2 and the arrowhead (marker orient=auto) points the way it
-// travels — at every length.
+// Quote-edge path from box s to box d. The line may leave s in any direction; it
+// arrives within 30° of perpendicular to the face it lands on — enough that the
+// arrowhead (marker orient=auto follows the final tangent) reads as aimed at the
+// box, but loose enough that the line curves smoothly into the arrowhead rather
+// than snapping square at the very end.
 const EDGE_OFF = 14;
 function quoteCurve(s, d, hs, hd) {
 	const scx = s.x + NODE_W / 2, scy = s.y + hs / 2;
 	const dcx = d.x + NODE_W / 2, dcy = d.y + hd / 2;
-	// Attach on the facing edges: the dominant axis picks left/right vs top/bottom
-	// faces, and the endpoints are nudged oppositely along the other axis so an
+	// Attach on the facing edges; nudge the endpoints along the other axis so an
 	// outgoing and an incoming edge on the same side don't sit on top of each other.
-	let p1, p2;
-	if (Math.abs(dcx - scx) >= Math.abs(dcy - scy)) {
-		p1 = {x: dcx >= scx ? s.x + NODE_W : s.x, y: scy + EDGE_OFF};
-		p2 = {x: dcx >= scx ? d.x : d.x + NODE_W, y: dcy - EDGE_OFF};
-	} else {
-		p1 = {x: scx + EDGE_OFF, y: dcy >= scy ? s.y + hs : s.y};
-		p2 = {x: dcx - EDGE_OFF, y: dcy >= scy ? d.y : d.y + hd};
+	// `into` is the unit vector pointing from the landing point into box d.
+	// Stagger the attach points: face centre + EDGE_OFF (keeps a tail clear of a
+	// reverse head) + a heading-based offset along the face, so several edges on the
+	// same box fan by direction (heading up → leave/enter higher, down → lower,
+	// straight across → middle) instead of piling on one point. Clamped to the face.
+	const dist = Math.hypot(dcx - scx, dcy - scy) || 1, STAGGER = 16;
+	const onFace = (c, half, base, dir) => { const lim = half - 6; return c + Math.max(-lim, Math.min(lim, base + dir)); };
+	let p1, p2, into;
+	if (Math.abs(dcx - scx) >= Math.abs(dcy - scy)) {       // left/right faces → stagger along y
+		const o = STAGGER * (dcy - scy) / dist;
+		p1 = {x: dcx >= scx ? s.x + NODE_W : s.x, y: onFace(scy, hs / 2, EDGE_OFF, o)};
+		p2 = {x: dcx >= scx ? d.x : d.x + NODE_W, y: onFace(dcy, hd / 2, -EDGE_OFF, -o)};
+		into = {x: dcx >= scx ? 1 : -1, y: 0};
+	} else {                                                // top/bottom faces → stagger along x
+		const o = STAGGER * (dcx - scx) / dist;
+		p1 = {x: onFace(scx, NODE_W / 2, EDGE_OFF, o), y: dcy >= scy ? s.y + hs : s.y};
+		p2 = {x: onFace(dcx, NODE_W / 2, -EDGE_OFF, -o), y: dcy >= scy ? d.y : d.y + hd};
+		into = {x: 0, y: dcy >= scy ? 1 : -1};
 	}
-	// Arms along the connector (not the centre chord): on short edges the facing
-	// attach points can sit crossed relative to the box centres, so chord-aligned
-	// arms point the wrong way (and fold the curve). The perpendicular bow, scaled
-	// to length, keeps a readable arc; it flips for the reverse direction so an
-	// outgoing and incoming edge between the same pair bow to opposite sides.
-	const ax = p2.x - p1.x, ay = p2.y - p1.y, span = Math.hypot(ax, ay) || 1;
-	const ux = ax / span, uy = ay / span, k = span * 0.35;
-	const bow = Math.min(span * 0.12, 22);
-	const c1 = {x: p1.x + ux * k - uy * bow, y: p1.y + uy * k + ux * bow};
-	const c2 = {x: p2.x - ux * k - uy * bow, y: p2.y - uy * k + ux * bow};
+	const span = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
+	const k = Math.min(span * 0.4, 60);                 // control-arm length (capped so short edges don't fold)
+	// `into` is also the travel axis (out of s, into d). Measure the natural approach
+	// relative to it, then pull both ends toward perpendicular by different amounts.
+	const intoA = Math.atan2(into.y, into.x);
+	let dev = Math.atan2(p2.y - p1.y, p2.x - p1.x) - intoA;
+	dev = Math.atan2(Math.sin(dev), Math.cos(dev));     // → [-π, π]
+	// Exit: a gentle perpendicular bias (keep ~70% of the deviation) so lines emanate
+	// clearly from the box edge rather than reading as a curve at the origin.
+	const depA = intoA + dev * 0.7;
+	const c1 = {x: p1.x + Math.cos(depA) * k, y: p1.y + Math.sin(depA) * k};
+	// Arrival: clamp to within 30° of perpendicular so the arrowhead points at the box.
+	const arrA = intoA + Math.max(-Math.PI / 6, Math.min(Math.PI / 6, dev));
+	const c2 = {x: p2.x - Math.cos(arrA) * k, y: p2.y - Math.sin(arrA) * k};
 	return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`;
 }
 
@@ -1250,7 +1160,12 @@ svg.addEventListener("wheel", (e) => {
 
 $("#fit").onclick = () => { if (lastBounds) fitView(...lastBounds); };
 // type=search clears via the native ✕ (and Esc); its input event rebuilds the list.
-$("#q").addEventListener("input", () => { buildSidebar(); markSearchHits(); });
+// Debounced (~0.7s) so it runs once you pause typing, not on every keystroke.
+let searchTimer;
+$("#q").addEventListener("input", () => {
+	clearTimeout(searchTimer);
+	searchTimer = setTimeout(() => { buildSidebar(); markSearchHits(); }, 700);
+});
 
 // Hovering a sidebar row draws a box around the run of rows in the same tree.
 // Results are clustered by tree, so the run is contiguous; we just span from the

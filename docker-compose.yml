@@ -30,6 +30,7 @@ services:
     command: >
       sh -c "python thread_browser.py ${ARCHIVE_DID} --out /site/index.json &&
              cp browse.html /site/index.html &&
+             cp flextree.js layout-lab.html /site/ &&
              cd /site && exec python -m http.server 8000"
 
   tunnel:

@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Layout Lab — reply-tree packing</title>
+<style>
+	:root { color-scheme: light dark; --line: color-mix(in srgb, CanvasText 30%, transparent); --quote: #c79a4a; }
+	html, body { height: 100%; margin: 0; }
+	body { font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+		color: CanvasText; background: Canvas; display: flex; flex-direction: column; }
+	header { display: flex; gap: 1em; align-items: center; padding: 0.5em 0.8em;
+		border-bottom: 1px solid var(--line); flex: 0 0 auto; flex-wrap: wrap; }
+	select { font: inherit; padding: 0.2em; max-width: 28em; }
+	main { flex: 1 1 auto; display: grid; grid-template-columns: 1fr 1fr; min-height: 0; }
+	section { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
+	h2 { margin: 0; padding: 0.3em 0.6em; font-size: 0.8em; color: GrayText; font-weight: 600;
+		border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+	h2 b { color: CanvasText; }
+	svg { flex: 1 1 auto; width: 100%; min-height: 0; background:
+		repeating-linear-gradient(0deg,color-mix(in srgb,CanvasText 5%,transparent) 0 1px,transparent 1px 24px),
+		repeating-linear-gradient(90deg,color-mix(in srgb,CanvasText 5%,transparent) 0 1px,transparent 1px 24px), Canvas; }
+	.box { fill: Canvas; stroke: var(--line); stroke-width: 1.2; }
+	.box.root { stroke: AccentColor; stroke-width: 2.5; }
+	.sat { fill: Canvas; stroke: var(--quote); stroke-width: 1.1; stroke-dasharray: 4 3; }
+	.edge { fill: none; stroke: var(--line); stroke-width: 1.3; }
+	.qedge { fill: none; stroke: var(--quote); stroke-width: 1.2; stroke-dasharray: 5 4; }
+	.date { fill: GrayText; font-size: 9px; }
+	.body { fill: CanvasText; font-size: 10px; }
+</style>
+</head>
+<body>
+<header>
+	<strong>Layout Lab</strong>
+	<label>thread: <select id="pick"></select></label>
+	<span id="note" style="color:GrayText">left: replies only (naive tidy) · right: non-layered contour tidy (flextree) + quotes/quoted beside their post (amber)</span>
+</header>
+<main>
+	<section><h2><span>Replies only (naive)</span><b id="mA"></b></h2><svg id="svgA"></svg></section>
+	<section><h2><span>flextree + quotes beside</span><b id="mB"></b></h2><svg id="svgB"></svg></section>
+</main>
+
+<script type="module">
+import { flextree } from "https://cdn.jsdelivr.net/npm/d3-flextree@2.1.2/+esm";
+
+const SVGNS = "http://www.w3.org/2000/svg";
+const NW = 170, GX = 18, GY = 34;
+let INDEX = {};
+const children = {}, quotedBy = {};
+
+const $ = (s) => document.querySelector(s);
+const el = (tag, attrs, parent) => {
+	const n = document.createElementNS(SVGNS, tag);
+	for (const k in attrs) n.setAttribute(k, attrs[k]);
+	parent && parent.appendChild(n);
+	return n;
+};
+
+function buildGraph() {
+	for (const rk in INDEX) { children[rk] = []; quotedBy[rk] = []; }
+	for (const rk in INDEX) {
+		const p = INDEX[rk].p; if (p && INDEX[p]) children[p].push(rk);
+		for (const q of INDEX[rk].q || []) if (INDEX[q]) quotedBy[q].push(rk);
+	}
+	const byDate = (a, b) => (INDEX[a].d || "").localeCompare(INDEX[b].d || "");
+	for (const k in children) children[k].sort(byDate);
+}
+const isLocalRoot = (rk) => { const e = INDEX[rk]; return !e.p || !INDEX[e.p]; };
+function descendants(rk, seen = new Set()) {
+	if (seen.has(rk)) return 0; seen.add(rk);
+	let n = 0; for (const c of children[rk]) n += 1 + descendants(c, seen);
+	return n;
+}
+const nodeH = (rk) => 24 + Math.min(8, Math.max(1, Math.ceil(((INDEX[rk].t || "").trim().length) / 24))) * 13;
+const quotesOut = (n) => (INDEX[n].q || []).filter(q => INDEX[q]);
+const stackH = (list) => list.length ? list.reduce((a, s) => a + nodeH(s), 0) + GY * (list.length - 1) : 0;
+
+function drawNode(parent, rk, x, y, isRoot, isSat) {        // x,y = top-left
+	const g = el("g", {transform: `translate(${x},${y})`}, parent);
+	el("rect", {class: (isSat ? "sat" : "box") + (isRoot ? " root" : ""), width: NW, height: nodeH(rk), rx: 5}, g);
+	const d = (INDEX[rk].d || "").slice(0, 10);
+	if (d) { const t = el("text", {x: 6, y: 12, class: "date"}, g); t.textContent = d; }
+	const t = el("text", {x: 6, y: 26, class: "body"}, g); t.textContent = (INDEX[rk].t || "").slice(0, 40);
+}
+function fit(svg, minX, minY, maxX, maxY) {
+	const pad = 30;
+	svg.setAttribute("viewBox", `${minX - pad} ${minY - pad} ${maxX - minX + 2 * pad} ${maxY - minY + 2 * pad}`);
+	svg.setAttribute("preserveAspectRatio", "xMidYMid meet");
+	return {w: Math.round(maxX - minX), h: Math.round(maxY - minY)};
+}
+
+// ---- A: naive tidy (replies only) ----
+function layoutTidy(n, out) {
+	const kids = children[n], hN = nodeH(n);
+	if (!kids.length) { out[n] = {x: 0, y: 0, w: NW}; return {w: NW, h: hN}; }
+	const cs = kids.map(k => layoutTidy(k, out));
+	const childW = cs.reduce((a, c) => a + c.w, 0) + GX * (cs.length - 1);
+	const w = Math.max(NW, childW), h = hN + GY + Math.max(...cs.map(c => c.h));
+	let cx = (w - childW) / 2;
+	kids.forEach((k, i) => { shift(k, out, cx, hN + GY); cx += cs[i].w + GX; });
+	out[n] = {x: (w - NW) / 2, y: 0, w};
+	return {w, h};
+}
+function shift(n, out, dx, dy) { out[n].x += dx; out[n].y += dy; for (const c of children[n]) shift(c, out, dx, dy); }
+function drawTidy(svg, root) {
+	svg.textContent = "";
+	const out = {}; layoutTidy(root, out);
+	const edges = el("g", {}, svg), nodes = el("g", {}, svg);
+	for (const n in out) for (const c of children[n])
+		el("path", {class: "edge", d: `M ${out[n].x + NW / 2} ${out[n].y + nodeH(n) / 2} L ${out[c].x + NW / 2} ${out[c].y + nodeH(c) / 2}`}, edges);
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	for (const n in out) {
+		drawNode(nodes, n, out[n].x, out[n].y, n === root, false);
+		minX = Math.min(minX, out[n].x); maxX = Math.max(maxX, out[n].x + NW);
+		minY = Math.min(minY, out[n].y); maxY = Math.max(maxY, out[n].y + nodeH(n));
+	}
+	return fit(svg, minX, minY, maxX, maxY);
+}
+
+// ---- B: flextree (non-layered contour tidy) with off-tree quote targets stacked
+// beside each post. Gutter space is reserved per node via nodeSize so the satellites
+// never collide with sibling subtrees; in-tree quotes are drawn as dashed edges. ----
+const toData = (rk) => ({rk, children: children[rk].map(toData)});
+function drawFlex(svg, root) {
+	svg.textContent = "";
+	const T = new Set();
+	(function walk(n) { if (T.has(n)) return; T.add(n); children[n].forEach(walk); })(root);
+	const sats = {};                                        // off-tree quote targets/quoters, beside each node
+	for (const n of T) {
+		const s = new Set();
+		for (const q of quotesOut(n)) if (!T.has(q)) s.add(q);
+		for (const q of quotedBy[n]) if (!T.has(q)) s.add(q);
+		sats[n] = [...s];
+	}
+	const allocW = (rk) => NW + (sats[rk].length ? GX + NW : 0);
+	const layout = flextree()
+		.nodeSize(d => [allocW(d.data.rk), Math.max(nodeH(d.data.rk), stackH(sats[d.data.rk])) + GY])
+		.spacing(() => GX);
+	const tree = layout.hierarchy(toData(root));
+	layout(tree);
+
+	let lo = Infinity, hi = -Infinity;                      // tree centre, for outward fanning
+	tree.each(n => { lo = Math.min(lo, n.x); hi = Math.max(hi, n.x); });
+	const centre = (lo + hi) / 2;
+	const pos = {};                                         // post geometry per node
+	tree.each(n => {
+		const rk = n.data.rk, boxLeft = n.x - allocW(rk) / 2;
+		const onLeft = sats[rk].length && n.x < centre;       // fan satellites to the open (outward) side
+		const postLeft = onLeft ? boxLeft + GX + NW : boxLeft;
+		const mid = n.y + (Math.max(nodeH(rk), stackH(sats[rk])) + GY) / 2;   // flextree y is the box top
+		pos[rk] = {postLeft, cx: postLeft + NW / 2, cy: mid, satX: onLeft ? boxLeft : boxLeft + NW + GX};
+	});
+	const edges = el("g", {}, svg), sedges = el("g", {}, svg), nodes = el("g", {}, svg);
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+	const bound = (x, y, h) => { minX = Math.min(minX, x); maxX = Math.max(maxX, x + NW); minY = Math.min(minY, y); maxY = Math.max(maxY, y + h); };
+
+	tree.each(n => { if (n.parent) { const a = pos[n.parent.data.rk], b = pos[n.data.rk];
+		el("path", {class: "edge", d: `M ${a.cx} ${a.cy} L ${b.cx} ${b.cy}`}, edges); } });
+	tree.each(n => {
+		const rk = n.data.rk, p = pos[rk];
+		for (const q of quotesOut(rk)) if (T.has(q))         // in-tree quote
+			el("path", {class: "qedge", d: `M ${p.cx} ${p.cy} L ${pos[q].cx} ${pos[q].cy}`}, sedges);
+		let sy = p.cy - stackH(sats[rk]) / 2;                // satellites stacked, centred on the post
+		for (const q of sats[rk]) {
+			const sh = nodeH(q);
+			el("path", {class: "qedge", d: `M ${p.cx} ${p.cy} L ${p.satX + NW / 2} ${sy + sh / 2}`}, sedges);
+			drawNode(nodes, q, p.satX, sy, false, true);
+			bound(p.satX, sy, sh); sy += sh + GY;
+		}
+		const top = p.cy - nodeH(rk) / 2;
+		drawNode(nodes, rk, p.postLeft, top, !n.parent, false);
+		bound(p.postLeft, top, nodeH(rk));
+	});
+	return fit(svg, minX, minY, maxX, maxY);
+}
+
+function show(root) {
+	const a = drawTidy($("#svgA"), root), b = drawFlex($("#svgB"), root);
+	const fmt = (m) => `${m.w}×${m.h}  (${(m.w * m.h / 1000).toFixed(0)}k px²)`;
+	$("#mA").textContent = fmt(a); $("#mB").textContent = fmt(b);
+}
+
+async function load() {
+	INDEX = (await (await fetch("index.json")).json()).posts;
+	buildGraph();
+	const roots = Object.keys(INDEX)
+		.filter(r => isLocalRoot(r) && !INDEX[r].tweet && !INDEX[r].external)
+		.map(r => ({r, n: descendants(r)})).filter(x => x.n >= 3)
+		.sort((a, b) => b.n - a.n).slice(0, 60);
+	const pick = $("#pick");
+	for (const {r, n} of roots) {
+		const o = document.createElement("option");
+		o.value = r; o.textContent = `${n} replies — ${(INDEX[r].t || "(no text)").slice(0, 50)}`;
+		pick.append(o);
+	}
+	pick.addEventListener("change", () => show(pick.value));
+	if (roots.length) show(roots[0].r);
+}
+load();
+</script>
+</body>
+</html>
