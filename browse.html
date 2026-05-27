@@ -4,6 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Thread Browser</title>
+<script>
+	// Apply a saved theme choice before first paint, so there's no flash. With no
+	// saved choice we leave color-scheme:light dark (set in CSS), which follows the OS.
+	{ const t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.style.colorScheme = t; }
+</script>
 <style>
 	:root {
 		color-scheme: light dark;
@@ -14,42 +19,64 @@
 		--tweet: #5b9bd5;
 		--ext: #4aa564;
 		--kin: #b07cff;   /* sidebar same-tree highlight; saturated so it shows in light & dark */
-		--hit: #f5c518;   /* search match highlight */
+		/* light-dark(lightValue, darkValue) — resolves against the active color-scheme,
+		   so these soften light mode without touching dark. */
+		--paper: light-dark(#f6f1e2, Canvas);   /* page + graph background: warm cream on light, system on dark */
+		--header: light-dark(color-mix(in srgb, AccentColor 13%, #efe6d0), color-mix(in srgb, AccentColor 16%, Canvas));
+		--hit: light-dark(#d6336c, #ff6aa8);    /* search-result highlight: a distinct rose, not the quote gold */
+		/* Raised chrome (header, sidebar) sits a shade above the cream work surface and
+		   floats on a soft two-layer shadow (Ptable's elevation). In dark mode the panel
+		   is *lighter* than the recess — that's how depth reads on a dark ground. */
+		--panel: light-dark(#fdfaf3, color-mix(in srgb, CanvasText 6%, Canvas));
+		--shadow-a: light-dark(rgba(0,0,0,.08), rgba(0,0,0,.34));   /* wide & soft */
+		--shadow-b: light-dark(rgba(0,0,0,.16), rgba(0,0,0,.5));    /* tight key */
 	}
 	html, body { height: 100%; margin: 0; }
 	body {
 		font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-		color: CanvasText; background: Canvas;
+		color: CanvasText; background: var(--paper);
 		display: flex; flex-direction: column;
 	}
-	header {
+	body > header {
 		display: flex; gap: 0.5em 0.8em; align-items: center; flex-wrap: wrap;
-		padding: 0.4em 0.8em; border-bottom: 1px solid var(--line); background: Canvas;
+		padding: 0.4em 0.8em; background: var(--header);
+		border-bottom: 1px solid color-mix(in srgb, AccentColor 35%, var(--header));
 		flex: 0 0 auto;
+		position: relative; z-index: 2;   /* float above the row so its shadow casts down */
+		box-shadow: 0 2px 5px var(--shadow-a), 0 1px 2px var(--shadow-b);
 	}
-	header input { width: 12em; padding: 0.3em 0.5em; font: inherit; }
-	header button { padding: 0.3em 0.8em; font: inherit; cursor: pointer; }
+	header input { padding: 0.3em 0.5em; font: inherit; }
+	#q { width: 12em; }
+	#url { flex: 1 1 16em; }   /* address bar: shows the current hash, editing it loads a thread */
 	#avatar { width: 30px; height: 30px; border-radius: 50%; object-fit: cover; }
 	#account { display: flex; flex-direction: column; line-height: 1.2; margin-right: auto; font-style: normal; }
 	#acctName { font-weight: 600; color: CanvasText; }
 	#acctName a { color: LinkText; text-decoration: none; font-weight: 500; }
 	#acctName a:hover { text-decoration: underline; }
 	#listToggle { cursor: pointer; font-size: 1.2em; line-height: 1; user-select: none; color: GrayText; }
-	/* The list is shown/hidden purely by the checkbox state — no JS. */
-	#hidelist:checked ~ main { grid-template-columns: 1fr; }
-	#hidelist:checked ~ main #sidebar { display: none; }
+	/* Show/hide the list by collapsing its grid column — animated (see main below), so it
+	   slides rather than popping; the panel's padding/border/shadow flatten too so nothing
+	   peeks at 0 width. Auto-hides when the focused post isn't ours and nothing is being
+	   searched (list + search cover only our own archive — also blank in API-only mode);
+	   a query in #q brings it back. */
+	#hidelist:checked ~ main,
+	body.offsite:not(:has(#q:not(:placeholder-shown))) main { grid-template-columns: 0 1fr; }
+	#hidelist:checked ~ main #sidebar,
+	body.offsite:not(:has(#q:not(:placeholder-shown))) #sidebar { padding: 0; border-right-width: 0; box-shadow: none; }
 	#acctDesc { color: GrayText; }
-	#help { color: GrayText; font-size: 0.78em; }
 	#status { color: GrayText; font-size: 0.85em; }
 
-	main { flex: 1 1 auto; display: grid; grid-template-columns: 260px 1fr; min-height: 0; }
+	main { flex: 1 1 auto; display: grid; grid-template-columns: 260px 1fr; min-height: 0; transition: grid-template-columns .3s ease; }
 	aside {
-		font-size: 0.85em; overflow-y: auto;
-		padding: 0.5em; border-right: 1px solid var(--line); background: Canvas;
+		font-size: 0.85em; overflow: hidden auto; min-width: 0;   /* min-width:0 lets the grid item shrink to a 0 track */
+		padding: 0.5em; border-right: 1px solid var(--line); background: var(--panel);
+		position: relative; z-index: 1;   /* raised panel; its edge shadow falls on the graph */
+		box-shadow: 3px 0 6px var(--shadow-a);
+		transition: padding .3s ease, border-right-width .3s ease, box-shadow .3s ease;
 	}
 	aside h3 { margin: 0.2em 0 0.5em; font-size: 0.8em; color: GrayText; text-transform: uppercase; letter-spacing: 0.05em; }
 	aside ul { list-style: none; margin: 0; padding: 0; position: relative; }
-	aside li { padding: 0.4em 0.3em; cursor: pointer; border-bottom: 1px solid var(--faint); color: CanvasText; }
+	aside li { padding: 0.4em 0.3em; cursor: pointer; border-bottom: 1px solid var(--faint); color: CanvasText; overflow-wrap: anywhere; }
 	aside li:hover { background: var(--faint); }
 	/* Rows in the same tree as the hovered row: a saturated translucent overlay
 	   (mixed with transparent, not Canvas, so it shows in dark mode too) plus a
@@ -58,57 +85,109 @@
 	aside li.active { background: color-mix(in srgb, AccentColor 30%, Canvas); }
 	/* Box drawn over the run of those rows, reinforcing them as one group. */
 	#kinbox { position: absolute; left: 0; right: 0; display: none; pointer-events: none;
+		box-sizing: border-box;   /* without this, left/right:0 sizes the content box and the 2px border overflows the column */
 		border: 2px solid var(--kin); border-radius: 5px;
 		background: color-mix(in srgb, var(--kin) 14%, transparent); }
 	aside li small { display: block; color: GrayText; }
+	/* search match: the same rose the graph rings matches with, not the UA yellow */
+	aside mark { background: color-mix(in srgb, var(--hit) 30%, transparent); color: inherit; border-radius: 2px; }
 
 	#view { position: relative; min-width: 0; min-height: 0; }
 	#graph { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; background:
 		repeating-linear-gradient(0deg,var(--faint) 0 1px,transparent 1px 26px),
-		repeating-linear-gradient(90deg,var(--faint) 0 1px,transparent 1px 26px), Canvas; }
+		repeating-linear-gradient(90deg,var(--faint) 0 1px,transparent 1px 26px), var(--paper); }
 	#graph.grabbing { cursor: grabbing; }
 
-	.node rect { fill: Canvas; stroke: var(--line); stroke-width: 1.2; rx: 6; }
-	.node:hover rect { stroke: AccentColor; }
-	/* ring the nodes matching the active search */
-	.node.hit rect { stroke: var(--hit); stroke-width: 2.5; fill: color-mix(in srgb, var(--hit) 18%, Canvas); }
-	.node.focus rect { fill: color-mix(in srgb, AccentColor 16%, Canvas); stroke: AccentColor; stroke-width: 2; }
-	.node.root rect { stroke-width: 3.5; }   /* a pinned thread root — ⌘-click to remove it */
-	.node.quote rect { fill: var(--faint); stroke-dasharray: 4 3; }
-	.node.tweet rect { fill: color-mix(in srgb, var(--tweet) 14%, Canvas); stroke: var(--tweet); }   /* light Twitter blue */
-	.node.external rect { fill: color-mix(in srgb, var(--ext) 13%, Canvas); stroke: var(--ext); }     /* outside post we replied to, fetched on demand */
-	.node .date { fill: GrayText; font-size: 10px; }
-	.node a:hover .date.link { fill: LinkText; text-decoration: underline; }
-	.node .body { fill: CanvasText; font-size: 12px; }
-	.node .badge { fill: GrayText; font-size: 10px; }
-	.node .lnk { fill: LinkText; text-decoration: underline; }
-	.node .men, .node .tag { fill: LinkText; }
-	.node text.foot { font-size: 10.5px; }
-	.node .clink { fill: LinkText; }   /* link-card chips are real <a>, so the browser gives the pointer */
-	.node .cmedia { fill: GrayText; }
+	/* `> rect` targets only the post's own box (a direct child), not the rects nested
+	   inside cards or toggles — so a quote/tweet box border doesn't bleed into them. */
+	.node > rect { fill: Canvas; stroke: var(--line); stroke-width: 1.2; rx: 6; }
+	.node:hover > rect { stroke: AccentColor; }
+	/* Authorship colour: every authored post is tinted by default; the ones by the focused
+	   post's author carry .focal (set in JS on each (re)focus) and reset to the plain white
+	   card. Placed after .au (overrides the tint) and before the selection states below. */
+	.node.au > rect { fill: color-mix(in srgb, var(--ext) 13%, Canvas); stroke: var(--ext); }
+	.node.focal > rect { fill: Canvas; stroke: var(--line); }
+	.node.quote > rect { fill: color-mix(in srgb, var(--quote) 10%, Canvas); stroke: color-mix(in srgb, var(--quote) 55%, var(--line)); stroke-dasharray: 4 3; }   /* off-tree quote */
+	.node.tweet > rect { fill: color-mix(in srgb, var(--tweet) 14%, Canvas); stroke: var(--tweet); }   /* a quoted tweet */
+	/* selection states last, so a ring always shows over any author/type colour */
+	.node.hit > rect { stroke: var(--hit); stroke-width: 2.5; fill: color-mix(in srgb, var(--hit) 18%, Canvas); }
+	.node.focus > rect { fill: color-mix(in srgb, AccentColor 16%, Canvas); stroke: AccentColor; stroke-width: 2; }
+	.node.root > rect { stroke-width: 3.5; }   /* a pinned thread root — ⌘-click to remove it */
 	.node .dbl { fill: none; stroke: var(--quote); stroke-width: 1; }
-	/* cursor is inherited, so stop the canvas's grab at the node boundary and let
-	   the browser pick per element inside (pointer on the date <a>, text over
-	   text, default on the box). In-tree nodes only re-centre, so they stay default. */
-	.node { cursor: auto; }
-	/* …but an off-tree quote/reply satellite, whose click loads that post's own
-	   graph, gets a pointer (excluding X satellites, whose only link is the footer). */
-	.node.quote:not(.tweet) { cursor: pointer; }
 
-	.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; }
+	/* A post is an HTML card inside a <foreignObject>: the browser wraps the text and
+	   lays out the media. The SVG rect behind it draws the border/fill, so the card is
+	   transparent. One offscreen copy (.measure) is sized to read each post's height. */
+	.post { width: 240px; box-sizing: border-box; padding: 8px 11px; background: transparent;
+		font-family: inherit; font-size: 12px; line-height: 1.36; color: CanvasText; cursor: default;
+		overflow-wrap: anywhere; }
+	.post.measure { position: absolute; left: -9999px; top: 0; visibility: hidden; }
+	.node.quote:not(.tweet) .post { cursor: pointer; }   /* a satellite click loads its own graph */
+	.post header { display: flex; gap: 5px; align-items: center;
+		font-size: 0.83em; color: GrayText; margin-bottom: 3px; }
+	.post .avatar { width: 1.35em; height: 1.35em; border-radius: 50%; object-fit: cover; flex: 0 0 auto; }
+	/* Quote-satellite relationship labels, generated by the cascade (no JS): outgoing
+	   leads before the icon with ↳ pointing into the quoted author; incoming trails the
+	   name with a quieter →. The header is flex, so ::before becomes the first item. */
+	.node.qout .post header::before { content: "quoted ↳"; white-space: nowrap; }
+	.node.qin .post .badge::after { content: " → quotes"; font-weight: 400; }
+	.post .badge { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.post a.badge { color: inherit; text-decoration: none; }
+	.post a.badge:hover { text-decoration: underline; }
+	.post .date { color: GrayText; text-decoration: none; white-space: nowrap; flex: 0 0 auto; margin-left: auto; }
+	.post a.date:hover { color: LinkText; text-decoration: underline; }
+	.post .body { white-space: pre-wrap; }
+	.post .body ~ * { margin-top: 6px; }   /* every block below the body is spaced once, here */
+	.post .lnk { color: LinkText; }
+	.post .men, .post .tag { color: LinkText; }
+	.post .dim { color: GrayText; }
+	.post img.media { display: block; width: 100%; height: 120px; max-height: 360px; object-fit: cover; border-radius: 5px; }   /* height is overridden to the image's real aspect-ratio when known; 120px is the fallback */
+	.post a.card { display: flex; gap: 8px; align-items: center; padding: 6px; text-decoration: none; color: inherit;
+		border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 6px;
+		background: color-mix(in srgb, CanvasText 4%, Canvas); }
+	.post a.card .cardthumb { width: 56px; height: 56px; flex: 0 0 auto; object-fit: cover; border-radius: 4px; }
+	.post a.card .cardtext { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+	.post a.card b { font-size: 0.92em; }
+	.post a.card i { font-size: 0.83em; font-style: normal; color: GrayText; }
+	.post a.card small { font-size: 0.8em; color: GrayText; }
+	.post a.card :is(b, i, small) { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+	.post .vidbox { padding: 6px; display: flex; align-items: center; justify-content: center; font-size: 0.92em;
+		border: 1px solid color-mix(in srgb, CanvasText 12%, transparent); border-radius: 6px;
+		background: color-mix(in srgb, CanvasText 4%, Canvas) center/cover no-repeat; }
+	.post .vidbox.hasthumb { height: 120px; color: white; text-shadow: 0 1px 3px black; }
+	.post .clink { display: inline-block; color: LinkText; text-decoration: none; font-size: 0.85em; }
+	.ctoggle { cursor: pointer; }
+	.ctoggle .ctbg { fill: Canvas; stroke: var(--edge); stroke-width: 1.2; }
+	.ctoggle:hover .ctbg { stroke: AccentColor; }
+	.ctoggle .ctlbl { fill: GrayText; font-size: 11px; }
+	/* the canvas shows a grab cursor; stop it at the node so content is default and
+	   links/satellites pick their own (handled above). */
+	.node { cursor: auto; transition: transform .3s ease, opacity .25s ease; }
+	/* Staggered add/remove: a node enters/leaves at opacity 0; survivors glide via the
+	   transform transition above when their position shifts between renders. */
+	.node.enter, .node.leave { opacity: 0; }
+
+	.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; transition: opacity .25s ease; }
 	.edge.quoteedge { stroke: var(--quote); stroke-dasharray: 5 4; marker-end: url(#qarrow); }
 	.edge.graft { stroke: var(--quote); }
-	.edge.extedge { stroke: var(--ext); stroke-dasharray: 5 4; }
 
-	#legend {
-		position: absolute; left: 10px; bottom: 10px;
-		background: color-mix(in srgb, Canvas 88%, transparent); border: 1px solid var(--line); border-radius: 5px;
-		padding: 0.3em 0.6em; font-size: 0.78em; color: GrayText;
+	/* graph-area overlays: a shared chip look for the legend (bottom-left), the help
+	   text (bottom-right), and the Fit/theme controls (top corners). */
+	#legend, #help, .ctrl {
+		position: absolute; background: color-mix(in srgb, Canvas 88%, transparent);
+		border: 1px solid var(--line); border-radius: 5px; color: GrayText;
 	}
+	#legend, #help { bottom: 10px; padding: 0.3em 0.6em; font-size: 0.78em; }
+	#legend { left: 10px; }
+	#help { right: 10px; max-width: 15em; text-align: right; }
 	#legend svg { vertical-align: middle; }
 	#legend .reply { stroke: var(--edge); }
 	#legend .quote { stroke: var(--quote); }
-	#legend .ext { stroke: var(--ext); }
+	#legend .otherswatch { fill: color-mix(in srgb, var(--ext) 13%, Canvas); stroke: var(--ext); }
+	.ctrl { top: 10px; display: flex; align-items: center; padding: 0.35em; cursor: pointer; color: CanvasText; }
+	.ctrl svg { width: 1.15em; height: 1.15em; display: block; }
+	#fit { left: 10px; }
+	#theme { right: 10px; }
 	.hint { position: absolute; inset: 0; display: grid; place-items: center; color: GrayText; padding: 2em; text-align: center; }
 </style>
 </head>
@@ -121,8 +200,7 @@
 		<span id="acctName"></span>
 		<small id="acctDesc"></small>
 	</address>
-	<span id="help">⌘/ctrl-click a quote to merge its thread; a bold root to remove it</span>
-	<button id="fit">Fit</button>
+	<input id="url" type="text" spellcheck="false" placeholder="post URL or thread id…">
 	<input id="q" type="search" placeholder="search posts…">
 	<span id="status"></span>
 </header>
@@ -141,29 +219,42 @@
 			</defs>
 			<g id="scene"></g>
 		</svg>
+		<button id="fit" class="ctrl" title="Fit to view" aria-label="Fit to view">
+			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<path d="M12 4v16M4 12h16"/><path d="M9 7l3-3 3 3M9 17l3 3 3-3M7 9l-3 3 3 3M17 9l3 3-3 3"/>
+			</svg>
+		</button>
+		<button id="theme" class="ctrl" title="Toggle light / dark" aria-label="Toggle light / dark theme">
+			<svg viewBox="0 0 16 16" aria-hidden="true">
+				<circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"/>
+				<path d="M8 1.4 A6.6 6.6 0 0 1 8 14.6 Z" fill="currentColor"/>
+			</svg>
+		</button>
+		<div id="help">⌘/ctrl-click a quote to merge its thread; a bold root to remove it</div>
 		<div id="legend">
 			<svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" class="reply" stroke-width="1.4"/></svg> reply&nbsp;&nbsp;
 			<svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" class="quote" stroke-width="1.4" stroke-dasharray="5 4"/></svg> quote&nbsp;&nbsp;
-			<svg width="26" height="10"><line x1="0" y1="5" x2="26" y2="5" class="ext" stroke-width="1.4" stroke-dasharray="5 4"/></svg> external reply
+			<svg width="14" height="11"><rect x="0.5" y="0.5" width="13" height="10" rx="2" class="otherswatch"/></svg> other author
 		</div>
 		<p class="hint" id="hint">Loading…</p>
 	</section>
 </main>
 
-<!-- Vendored d3-flextree (non-layered tidy-tree layout, van der Ploeg). Plain
-     script so it sets window.d3.flextree before the deferred module runs. -->
-<script src="flextree.js"></script>
 <script type="module">
 // ES module: strict by default, module-scoped (no globals leak), and deferred —
 // so the DOM is already parsed when this runs.
+// Pure, DOM-free layout engine (visible-subgraph build, text wrap, flextree forest).
+// We hand it the data model by reference; it hands back geometry. render() draws it.
+import { initLayout, buildVisible, computeLayout, localRoot, isLocalRoot, isAncestor, isNoise, descendantCount,
+	NODE_W } from "./layout.js";
 const SVGNS = "http://www.w3.org/2000/svg";
 // index entries are compact: { t:text, d:createdAt, p:parentRkey?, q:[quoted]?,
 //   f:facets?, alt:[strings]?, ext:{u,t,d}?, img:n?, vid:true?, xp:parentDid? }
 // xp/xr/xrd are set when a reply targets someone else's post (the parent isn't
-// in the archive): xp = parent DID, xr = thread root rkey, xrd = root DID. The
-// browser groups our posts by xr and fetches the connecting outside posts from
-// the public API on demand (see injectGroup); each fetched post is added as
-// a real entry keyed by its own rkey with { external:true, did, handle, t, d, f?,
+// in the archive): xp = parent DID, xr = thread root rkey, xrd = root DID. When such
+// a post is shown, showView pulls its outside thread from the public API (fetchThread
+// on the root, xrd/xr) — the same path network posts use; each fetched post is added
+// as a real entry keyed by its own rkey with { external:true, did, handle, t, d, f?,
 // p? } so it slots straight into the reply tree.
 // Quoted tweets are real entries keyed "x:<rkey>" with { tweet:true, u, t, a }.
 let INDEX = {};
@@ -174,24 +265,21 @@ let PINS = [];         // pinned thread roots shown together (ctrl+click merges 
 // move the highlight + pan, instead of re-laying-out and re-fitting the view.
 let lastPinsKey = null, lastPos = null, lastH = null, lastBounds = null;
 let lastShown = null;  // hash we last restored, to dedupe popstate/hashchange/our own writes
+// Persistent SVG layers + the live node <g> map, so renders reconcile (keep/move/fade)
+// instead of rebuilding — that's what lets survivors glide and adds/removes stagger.
+let edgeLayer = null, nodeLayer = null, nodeEls = {}, edgeItems = [], staggerTimer = null;
+const STEP_MS = 500;        // stagger reveal cadence — ~2 nodes per second
+const CAM_MS = STEP_MS * 2; // camera trails ~2 steps, so the rezoom glides continuously instead of lurching once per reveal
 const children = {};   // rkey -> [child rkeys]   (local replies)
 const quotedBy = {};   // rkey -> [quoting rkeys] (local quotes pointing in)
-
-// Our posts that reply into outside threads, grouped by the thread root rkey
-// (entry.xr). Lets us put every post we made in one outside thread on a single
-// graph. Built in buildGraph(); state per root tracks the on-demand fetch.
-const EXTGROUPS = {};   // rootRkey -> [our post rkeys sharing that root]
-const EXTSTATE = {};    // rootRkey -> undefined | "loading" | "done"
+const COLLAPSED = new Set();   // rkeys whose reply subtree the user has folded shut (downward)
+const UPCOLLAPSED = new Set(); // rkeys folded upward: their thread is re-rooted here, hiding everything above
 const APPVIEW = "https://public.api.bsky.app/xrpc";
 
 let FOCUS = null;
 
-// Layout constants. Boxes are fixed width but grow in height to fit their text
-// (posts cap near 300 chars), so short posts stay compact and long ones aren't
-// clipped. Per-node heights live in the HMAP built each navigate().
-const NODE_W = 240, H_GAP = 26, V_GAP = 46, SAT_GAP = 34, SAT_VGAP = 14, FOREST_GAP = 90;
-const PAD = 11, DATE_Y = 16, BODY_TOP = 33, LINE_H = 16;
-const MAX_CHARS = 35, MAX_LINES = 11;
+// NODE_W (box width) comes from layout.js; post padding/spacing live in the .post CSS,
+// since the browser now lays out and measures the card.
 
 const $ = (s) => document.querySelector(s);
 const setStatus = (m) => { $("#status").textContent = m; };
@@ -204,22 +292,42 @@ function applyTransform() {
 	scene.setAttribute("transform", `translate(${tx},${ty}) scale(${scale})`);
 }
 
+// Ease the camera to a target transform (ease-out cubic). Cancelled the moment the
+// user grabs the canvas (see pointerdown/wheel), so it never fights manual input.
+let camAnim = null;
+function stopCam() { if (camAnim) { cancelAnimationFrame(camAnim); camAnim = null; } }
+function animateTo(nx, ny, ns, ms = 320) {
+	stopCam();
+	const x0 = tx, y0 = ty, s0 = scale, t0 = performance.now();
+	const step = (now) => {
+		const e = 1 - (1 - Math.min(1, (now - t0) / ms)) ** 3;
+		tx = x0 + (nx - x0) * e; ty = y0 + (ny - y0) * e; scale = s0 + (ns - s0) * e;
+		applyTransform();
+		camAnim = e < 1 ? requestAnimationFrame(step) : null;
+	};
+	camAnim = requestAnimationFrame(step);
+}
+
 // ---------- data loading ----------
 async function load(src = "index.json") {
 	setStatus("Loading " + src + "…");
-	const r = await fetch(src);
-	if (!r.ok) throw new Error("HTTP " + r.status + " loading " + src);
-	const data = await r.json();
-	INDEX = data.posts;                    // {did, meta, posts} payload
-	DID = data.did;
-	META = data.meta;
+	// The archive is an optional cache: present, it fills INDEX (and powers the sidebar
+	// list + free-text search); absent, we run API-only — blank sidebar, everything
+	// resolved through the URL field. Either way INDEX is the one store the API tops up.
+	let data = null;
+	try { const r = await fetch(src); if (r.ok) data = await r.json(); } catch { /* no archive → API-only */ }
+	INDEX = data ? data.posts : {};
+	DID = data ? data.did : "";
+	META = data ? data.meta : {};
 	populateHeader();
 	buildGraph();
+	// Hand the layout engine the live model (same refs we keep mutating via fetches).
+	initLayout({INDEX, children, quotedBy, COLLAPSED, UPCOLLAPSED});
 	buildSidebar();
 	const dates = Object.values(INDEX).map(e => e.d).filter(Boolean);
 	const latest = dates.length ? dates.reduce((a, b) => a > b ? a : b).slice(0, 10) : "";
-	$("#status").innerHTML = `${Object.keys(INDEX).length} posts loaded.`
-		+ (latest ? `<br>Up to ${latest}` : "");
+	$("#status").innerHTML = data ? `${Object.keys(INDEX).length} posts loaded.` + (latest ? `<br>Up to ${latest}` : "")
+		: "No archive — paste a post URL above.";
 	FOCUS = null; PINS = []; lastPinsKey = null;   // force the first navigate to fully render (and replace, not push)
 	showHash(true);                                // restore a shared/bookmarked (possibly merged) view, fetching outside threads it names
 }
@@ -234,26 +342,6 @@ function buildGraph() {
 	const byDate = (a, b) => (INDEX[a].d || "").localeCompare(INDEX[b].d || "");
 	for (const k in children) children[k].sort(byDate);
 	for (const k in quotedBy) quotedBy[k].sort(byDate);
-	for (const rkey in INDEX) {                         // group our posts by outside thread root
-		const r = INDEX[rkey].xr;
-		if (r) (EXTGROUPS[r] || (EXTGROUPS[r] = [])).push(rkey);
-	}
-}
-
-function localRoot(rkey) {
-	const seen = new Set([rkey]);
-	let cur = rkey;
-	while (true) {
-		const par = INDEX[cur] && INDEX[cur].p;
-		if (!par || !INDEX[par] || seen.has(par)) return cur;
-		seen.add(par);
-		cur = par;
-	}
-}
-
-function isLocalRoot(rkey) {
-	const e = INDEX[rkey];
-	return !e.p || !INDEX[e.p];
 }
 
 // The root of the graph a click on this post would open: its local thread root,
@@ -262,37 +350,6 @@ function isLocalRoot(rkey) {
 function graphRoot(rkey) {
 	const r = localRoot(rkey);
 	return INDEX[r].xr || r;
-}
-
-// An empty reply to someone else's post is noise — skip it. The exception is
-// the trick of replying to an outside post with only a quote of one of our own
-// posts, which we keep because it connects that post into our own tree.
-function isNoise(rkey) {
-	const e = INDEX[rkey];
-	if ((e.t || "").trim()) return false;          // has its own words
-	if (!e.p || INDEX[e.p]) return false;           // not a reply to someone else
-	return !(e.q || []).some(q => INDEX[q]);        // keep only if it quotes our own post
-}
-
-// A textless leaf reply to one of our own posts whose only payload is a quote
-// is just a connector — we collapse the empty box and hang its quote straight
-// off the parent (drawn with a double border to flag the shortcut).
-function isCollapsible(rkey) {
-	const e = INDEX[rkey];
-	if ((e.t || "").trim()) return false;           // has its own words
-	if (!e.p || !INDEX[e.p]) return false;          // must reply to one of our posts
-	if (e.img || e.vid || e.ext) return false;      // carries other content
-	if (children[rkey].length) return false;        // has replies — would orphan them
-	return e.q && e.q.some(q => INDEX[q]);
-}
-
-function descendantCount(rkey, seen) {
-	seen = seen || new Set();
-	if (seen.has(rkey)) return 0;
-	seen.add(rkey);
-	let n = 0;
-	for (const c of children[rkey]) n += 1 + descendantCount(c, seen);
-	return n;
 }
 
 function topThreads() {
@@ -338,18 +395,41 @@ function sidebarItem(rk, goto, metaText, mark) {
 function populateHeader() {
 	const m = META;
 	// Display name links to the profile via DID (handles aren't recorded in the
-	// archive, but bsky.app/profile/<did> resolves fine).
-	const lk = document.createElement("a");
-	lk.href = `https://bsky.app/profile/${DID}`;
-	lk.textContent = m.name;
-	$("#acctName").append(lk);
-	$("#acctDesc").textContent = m.desc;
-	const av = $("#avatar");
+	// archive, but bsky.app/profile/<did> resolves fine). All optional — in API-only
+	// mode (no archive) the profile is empty and the header just stays bare.
+	if (m.name) {
+		const lk = document.createElement("a");
+		lk.href = `https://bsky.app/profile/${DID}`;
+		lk.textContent = m.name;
+		$("#acctName").append(lk);
+	}
+	if (m.desc) $("#acctDesc").textContent = m.desc;
 	if (m.avatar) {                        // optional — the <img> starts hidden
+		const av = $("#avatar");
 		av.src = `https://cdn.bsky.app/img/avatar_thumbnail/plain/${DID}/${m.avatar}@jpeg`;
 		av.hidden = false;
 	}
-	document.title = m.name + " — Thread Browser";
+	document.title = m.name ? m.name + " — Thread Browser" : "Thread Browser";
+}
+
+// The top-left identity follows the focused (white-anchor) author: avatar, name (linked
+// to their profile), and @handle beneath. The handle rides along with every fetched post,
+// so no profile call; the archive owner (whose handle we don't store) shows its
+// description instead. Runs on every focus change, full render or fast-path refocus.
+function updateHeader(rk) {
+	const e = INDEX[rk];
+	if (!e) return;
+	document.body.classList.toggle("offsite", !!e.external);   // CSS hides the archive-only sidebar when off-site
+
+	const did = e.external ? e.did : DID;
+	const name = e.external ? (e.name || "@" + (e.handle || "")) : (META.name || "");
+	const sub = e.external ? (e.name && e.handle ? "@" + e.handle : "") : (META.desc || "");
+	const av = avatarURL(e), avEl = $("#avatar");
+	if (av) { avEl.src = av; avEl.hidden = false; } else avEl.hidden = true;
+	const acct = $("#acctName");
+	acct.textContent = "";
+	if (name && did) { const a = document.createElement("a"); a.href = `https://bsky.app/profile/${did}`; a.textContent = name; acct.append(a); }
+	$("#acctDesc").textContent = sub;
 }
 
 function heading(text) {
@@ -398,82 +478,6 @@ function buildSidebar() {
 }
 
 // ---------- text helpers ----------
-// Split text into styled runs using the byte-offset facets (links/mentions/tags).
-function richSegments(e) {
-	const txt = e.t || "";
-	if (!txt.trim()) {
-		let t = "(no text)";
-		if (e.ext && e.ext.t) t = e.ext.t;
-		else if (e.img) t = "";          // the thumbnail (+ its alt caption) carries it
-		else if (e.vid) t = "[video]";
-		return [{t}];
-	}
-	if (!e.f || !e.f.length) return [{t: txt}];
-	const enc = new TextEncoder(), dec = new TextDecoder();
-	const bytes = enc.encode(txt);
-	const facets = [...e.f].sort((a, b) => a.index.byteStart - b.index.byteStart);
-	const segs = [];
-	let cursor = 0;
-	for (const f of facets) {
-		const start = f.index.byteStart, end = f.index.byteEnd;
-		if (start < cursor) continue;
-		if (start > cursor) segs.push({t: dec.decode(bytes.slice(cursor, start))});
-		const inner = dec.decode(bytes.slice(start, end));
-		const feat = f.features[0];
-		if (feat.$type === "app.bsky.richtext.facet#link") segs.push({t: inner, link: feat.uri});
-		else if (feat.$type === "app.bsky.richtext.facet#mention") segs.push({t: inner, men: true});
-		else if (feat.$type === "app.bsky.richtext.facet#tag") segs.push({t: inner, tag: true});
-		else segs.push({t: inner});
-		cursor = end;
-	}
-	if (cursor < bytes.length) segs.push({t: dec.decode(bytes.slice(cursor))});
-	return segs;
-}
-
-// Greedy word-wrap that preserves each run's style; returns lines of runs.
-function wrapSegs(segs) {
-	const lines = [];
-	let cur = [], curLen = 0, truncated = false;
-	const pushLine = () => { lines.push(cur); cur = []; curLen = 0; };
-	const add = (text, seg) => { cur.push({text, link: seg.link, men: seg.men, tag: seg.tag}); curLen += text.length; };
-
-	outer:
-	for (const seg of segs) {
-		for (let part of seg.t.split(/(\s+)/)) {
-			if (part === "") continue;
-			if (/^\s+$/.test(part)) {                       // whitespace
-				if (part.includes("\n")) { if (cur.length) pushLine(); }   // newline → hard break
-				else if (curLen > 0) add(" ", seg);                        // soft space (not at line start)
-				continue;
-			}
-			while (part.length > MAX_CHARS) {               // hard-break very long token
-				if (curLen > 0) pushLine();
-				if (lines.length >= MAX_LINES) { truncated = true; break outer; }
-				add(part.slice(0, MAX_CHARS - 1) + "·", seg);
-				pushLine();
-				part = part.slice(MAX_CHARS - 1);
-			}
-			if (curLen > 0 && curLen + part.length > MAX_CHARS) {
-				pushLine();
-				if (lines.length >= MAX_LINES) { truncated = true; break outer; }
-			}
-			add(part, seg);
-		}
-	}
-	if (cur.length) pushLine();
-	if (lines.length > MAX_LINES) { lines.length = MAX_LINES; truncated = true; }
-	if (truncated && lines.length) {
-		const last = lines[lines.length - 1];
-		if (last.length) { const r = last[last.length - 1]; r.text = r.text.replace(/.$/, "") + "…"; }
-		else last.push({text: "…"});
-	}
-	return lines;
-}
-
-function domain(u) {
-	return new URL(u).hostname.replace(/^www\./, "");
-}
-
 // Everything a search should match for a post, lowercased: its text, image alt
 // text, and any link URLs (richtext facets + external card).
 function searchText(e) {
@@ -487,101 +491,102 @@ function searchText(e) {
 // Dumbnail: the full-size CDN image (built from the blob CID + repo DID) dropped
 // into a fixed box and shrunk by the browser — no thumbnailing, no aspect math.
 const CDN_IMG = "https://cdn.bsky.app/img/feed_fullsize/plain/";
+const CDN_THUMB = "https://cdn.bsky.app/img/feed_thumbnail/plain/";
 const imgURL = (cid) => `${CDN_IMG}${DID}/${cid}@jpeg`;
+// A media token is already a full URL (network embeds hand us one) or a blob CID from
+// our own archive (build the thumbnail CDN URL from it).
+const mediaURL = (tok, full) => tok.startsWith("http") ? tok : `${full ? CDN_IMG : CDN_THUMB}${DID}/${tok}@jpeg`;
 
-// Footer chips for attachments with no inline representation. Inline facet
-// links aren't listed here — they're shown in the text (hover for the URL), so
-// a footer chip would just be noise. External cards / video / tweets aren't in
-// the text, so they get a chip.
-function mediaChips(e) {
-	const c = [];
-	if (e.ext && e.ext.u) {
-		const title = (e.ext.t || "").trim();
-		const label = title ? (title.length > 46 ? title.slice(0, 45) + "…" : title) : domain(e.ext.u);
-		const tip = [title, e.ext.d, domain(e.ext.u)].filter(Boolean).join("\n");
-		c.push({label: "▤ " + label, url: e.ext.u, cls: "clink", title: tip});
+// ---------- post content (HTML) ----------
+// A post is an HTML card inside a <foreignObject>: the browser wraps the text, lays
+// out the images/card/video, and we measure the height for the tidy-tree packing.
+const esc = (s) => s.replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+const domain = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; } };
+// "3:14pm" (local) from an ISO timestamp; "" if unparseable.
+const timeStr = (iso) => {
+	const dt = new Date(iso);
+	if (isNaN(dt)) return "";
+	const h = dt.getHours();
+	return `${h % 12 || 12}:${String(dt.getMinutes()).padStart(2, "0")}${h < 12 ? "am" : "pm"}`;
+};
+
+// Post body as HTML, styling the byte-offset facets (links / mentions / tags) inline.
+function bodyHTML(e) {
+	const txt = e.t || "";
+	if (!txt.trim()) {
+		if (e.ext && e.ext.u || e.img || e.vid) return "";   // the media carries it
+		return `<span class="dim">(no text)</span>`;
 	}
-	if (e.vid) c.push({label: "▶ video", cls: "cmedia"});
-	if (e.tweet && e.u) c.push({label: "↗ " + domain(e.u), url: e.u, cls: "clink"});
-	return c;                              // images are drawn as a frame, not a chip
+	if (!e.f || !e.f.length) return esc(txt);
+	const enc = new TextEncoder(), dec = new TextDecoder(), bytes = enc.encode(txt);
+	const facets = [...e.f].sort((a, b) => a.index.byteStart - b.index.byteStart);
+	let out = "", cursor = 0;
+	for (const f of facets) {
+		const start = f.index.byteStart, end = f.index.byteEnd;
+		if (start < cursor) continue;
+		if (start > cursor) out += esc(dec.decode(bytes.slice(cursor, start)));
+		const inner = esc(dec.decode(bytes.slice(start, end))), feat = f.features[0];
+		if (feat.$type === "app.bsky.richtext.facet#link") out += `<a class="lnk" href="${esc(feat.uri)}" title="${esc(feat.uri)}">${inner}</a>`;
+		else if (feat.$type === "app.bsky.richtext.facet#mention") out += `<span class="men">${inner}</span>`;
+		else if (feat.$type === "app.bsky.richtext.facet#tag") out += `<span class="tag">${inner}</span>`;
+		else out += inner;
+		cursor = end;
+	}
+	if (cursor < bytes.length) out += esc(dec.decode(bytes.slice(cursor)));
+	return out;
 }
 
-// Build wrapped lines, image thumbnails, chips, and pixel height (cached per view).
-function nodeLayout(rk) {
-	const e = INDEX[rk];
-	const lines = wrapSegs(richSegments(e));
-	const chips = mediaChips(e);
-	let img = null;
-	if (e.img && e.img.length) {                  // dumbnails: each image shrunk into a fixed box, stacked
-		const W = NODE_W - 2 * PAD, TH = 120, GAP = 4;
-		const boxes = e.img.map((im, i) => ({x: PAD, y: i * (TH + GAP), w: W, h: TH, c: im.c, alt: im.a || ""}));
-		img = {boxes, h: e.img.length * (TH + GAP) - GAP};
-	}
-	let h = BODY_TOP + (lines.length - 1) * LINE_H + 6;
-	if (img) h += 6 + img.h;
-	if (chips.length) h += 8 + 13;
-	h += 9;
-	return {lines, chips, img, h};
+// The author's avatar URL: our own account's (a blob CID via the avatar CDN) or, for a
+// fetched post, the full URL the view already gave us. Tweets/grafts have none.
+function avatarURL(e) {
+	if (e.tweet) return null;
+	if (e.external) return e.avatar || null;
+	return META.avatar ? `https://cdn.bsky.app/img/avatar_thumbnail/plain/${DID}/${META.avatar}@jpeg` : null;
 }
 
-// ---------- visible subgraph ----------
-// Build the union of every pinned thread. Quotes between two visible posts
-// become connecting edges; quotes to anything outside stay as satellites.
-function buildVisible(pins) {
-	const pinSet = new Set(pins);
-	const tree = new Set();
-	for (const root of pins) (function walk(rk) {
-		if (tree.has(rk)) return;
-		tree.add(rk);
-		for (const c of children[rk]) walk(c);
-	})(root);
-
-	// Collapse blank quote-only leaf replies to our own posts: drop the empty box
-	// and graft the quoted post into its slot AS A REPLY (it really is one) — a
-	// child via a solid edge, drawn with a double border to flag the shortcut.
-	const collapsed = [];
-	for (const rk of tree) if (!pinSet.has(rk) && isCollapsible(rk)) collapsed.push(rk);
-	for (const rk of collapsed) tree.delete(rk);
-
-	const grafts = new Set();                       // grafted nodes — drawn double-boxed
-	const treeKids = {};                            // per-view child lists (replies + grafts)
-	for (const rk of tree) treeKids[rk] = children[rk].filter(c => tree.has(c));
-
-	const quoteEdges = [];   // {from, to}  meaning "from quotes to"
-	// An off-tree quote post is one box (satNodeMap) but every link to it gets its
-	// own edge (satEdges) — so a post quoted by several visible posts shows once
-	// with several arrows pointing in.
-	const satNodeMap = {};   // rkey -> {rkey, anchor, dir}  (placement + badge)
-	const satEdges = [];     // {anchor, sat, dir}           (one per quote link)
-	const addSat = (q, anchor, dir) => {
-		if (!satNodeMap[q]) satNodeMap[q] = {rkey: q, anchor, dir};   // place beside its first linker
-		satEdges.push({anchor, sat: q, dir});
-	};
-
-	for (const c of collapsed) {
-		const anchor = INDEX[c].p;                     // a collapsed leaf's parent is never collapsed
-		if (!tree.has(anchor)) continue;
-		for (const q of INDEX[c].q || []) {
-			if (!INDEX[q]) continue;
-			if (tree.has(q)) quoteEdges.push({from: anchor, to: q});   // target already shown → just link
-			else { tree.add(q); treeKids[q] = []; treeKids[anchor].push(q); grafts.add(q); }
-		}
+// Full post content (header + body + images + link card + video + tweet chip) as HTML.
+function postHTML(rkey, badge) {
+	const e = INDEX[rkey];
+	const dstr = (e.d || "").slice(0, 10);
+	let h = "<header>";
+	const av = avatarURL(e);
+	if (av) h += `<img class="avatar" src="${esc(av)}" alt="">`;
+	// the name links to the author's profile (a tweet links out to X)
+	const prof = e.tweet ? e.u : e.external ? (e.did && `https://bsky.app/profile/${e.did}`) : (DID && `https://bsky.app/profile/${DID}`);
+	if (badge) h += prof ? `<a class="badge" href="${esc(prof)}">${esc(badge)}</a>` : `<span class="badge">${esc(badge)}</span>`;
+	const when = dstr + (timeStr(e.d) ? " · " + timeStr(e.d) : "");
+	if (dstr && !e.tweet) {
+		const did = e.external ? e.did : DID, rk = e.external ? e.rkey : rkey;
+		h += `<a class="date" href="https://bsky.app/profile/${did}/post/${rk}">${when}</a>`;
+	} else if (dstr) h += `<span class="date">${when}</span>`;
+	h += `</header><div class="body">${bodyHTML(e)}</div>`;
+	if (e.img) for (const im of e.img) {
+		const ar = im.ar ? ` style="aspect-ratio:${im.ar[0]}/${im.ar[1]};height:auto"` : "";   // size the box to the image
+		h += `<img class="media"${ar} src="${esc(im.u || imgURL(im.c))}"${im.a ? ` alt="${esc(im.a)}" title="${esc(im.a)}"` : ""}>`;
 	}
-
-	// Quote edges + satellites for the real (non-grafted) tree.
-	for (const n of tree) {
-		if (grafts.has(n)) continue;                   // grafted leaves carry no further links here
-		for (const q of INDEX[n].q || []) {
-			if (!INDEX[q]) continue;
-			if (tree.has(q)) quoteEdges.push({from: n, to: q});
-			else if (!isNoise(q)) addSat(q, n, "out");
-		}
-		for (const q of quotedBy[n]) {       // in-tree quotes are caught from the other side
-			if (!tree.has(q)) addSat(q, n, "in");
-		}
+	if (e.ext && e.ext.u && !e.tweet) {
+		const t = (e.ext.t || "").trim(), d = (e.ext.d || "").trim();
+		h += `<a class="card" href="${esc(e.ext.u)}" title="${esc(e.ext.u)}">`;
+		if (e.ext.thumb) h += `<img class="cardthumb" src="${esc(mediaURL(e.ext.thumb))}" alt="">`;
+		h += `<span class="cardtext">${t ? `<b>${esc(t)}</b>` : ""}${d ? `<i>${esc(d)}</i>` : ""}<small>${esc(domain(e.ext.u))}</small></span></a>`;
 	}
-	return {tree, quoteEdges, satNodes: Object.values(satNodeMap), satEdges, treeKids, grafts};
+	if (e.vid) h += `<div class="vidbox${e.vthumb ? " hasthumb" : ""}"${e.vthumb ? ` style="background-image:url('${esc(mediaURL(e.vthumb))}')"` : ""}>▶ video</div>`;
+	if (e.tweet && e.u) h += `<a class="clink" href="${esc(e.u)}">↗ ${esc(domain(e.u))}</a>`;
+	return h;
 }
+
+// One offscreen card we reuse to measure a post's pixel height before packing.
+const measurer = el2div();
+function el2div() { const d = document.createElement("div"); d.className = "post measure"; document.body.appendChild(d); return d; }
+// A post's content is immutable once it's in INDEX, so its measured height never changes.
+// Cache by post+badge to skip the forced reflow per visible post on every render.
+const HCACHE = {};
+const measureHeight = (rkey, badge) => {
+	const key = `${rkey} ${badge}`;
+	if (key in HCACHE) return HCACHE[key];
+	measurer.innerHTML = postHTML(rkey, badge);
+	return HCACHE[key] = measurer.offsetHeight;
+};
 
 // ---------- SVG drawing ----------
 function el(tag, attrs, parent) {
@@ -596,118 +601,169 @@ function drawEdge(parent, x1, y1, x2, y2, cls) {
 	const dy = (y2 - y1);
 	const c = Math.max(20, Math.abs(dy) * 0.4);
 	const d = `M ${x1} ${y1} C ${x1} ${y1 + c}, ${x2} ${y2 - c}, ${x2} ${y2}`;
-	el("path", {d, class: cls}, parent);
+	return el("path", {d, class: cls}, parent);
 }
 
-function drawNode(parent, rkey, x, y, lay, cls, badge, dbl) {
+// Who wrote a post: a fetched post carries its author DID; an archive post is the
+// account whose repo we loaded (DID). Used to colour posts by author, not by account.
+const authorDid = (rk) => (INDEX[rk] && INDEX[rk].external ? INDEX[rk].did : DID);
+
+// A node's <g> persists across renders (so survivors can glide and add/remove can
+// stagger), so creation (the click handler, once) is split from fill (innards + class,
+// every render). Position is set by the caller via the CSS transform that animates.
+function makeNode(rkey) {
 	const e = INDEX[rkey];
-	const klass = "node " + (cls || "") + (e.tweet ? " tweet" : "") + (e.external ? " external" : "");
-	const g = el("g", {class: klass, "data-rkey": rkey, transform: `translate(${x},${y})`}, parent);
-	el("rect", {width: NODE_W, height: lay.h, rx: 6}, g);
-	if (dbl) el("rect", {x: 3, y: 3, width: NODE_W - 6, height: lay.h - 6, rx: 4, class: "dbl"}, g);
-
-	// date — links to the real bsky.app post (skip tweet nodes, which have no date).
-	// External parents live on another repo, so use their own DID + rkey.
-	const linkDid = e.external ? e.did : DID;
-	const linkRkey = e.external ? e.rkey : rkey;
-	// date on the right; badge (quoted / 𝕏 username / @handle) on the left
-	const dstr = (e.d || "").slice(0, 10);
-	if (dstr && !e.tweet) {
-		const a = el("a", {href: `https://bsky.app/profile/${linkDid}/post/${linkRkey}`}, g);
-		const date = el("text", {x: NODE_W - PAD, y: DATE_Y, class: "date link", "text-anchor": "end"}, a);
-		date.textContent = dstr;
-		const t = el("title", {}, a); t.textContent = "Open on Bluesky";
-		a.addEventListener("click", (ev) => ev.stopPropagation());   // don't also recenter
-	} else if (dstr) {
-		const date = el("text", {x: NODE_W - PAD, y: DATE_Y, class: "date", "text-anchor": "end"}, g);
-		date.textContent = dstr;
-	}
-	if (badge) {
-		const b = el("text", {x: PAD, y: DATE_Y, class: "badge"}, g);
-		b.textContent = badge;
-	}
-
-	// body — one <text> per wrapped line, with styled (and clickable) runs
-	lay.lines.forEach((runs, i) => {
-		const line = el("text", {x: PAD, y: BODY_TOP + i * LINE_H, class: "body"}, g);
-		for (const r of runs) {
-			if (r.link) {                              // real link: same-tab click, native ⌘/ctrl-click
-				const a = el("a", {href: r.link}, line);
-				a.addEventListener("click", (ev) => ev.stopPropagation());   // don't also recenter the node
-				const ts = el("tspan", {class: "lnk"}, a);
-				ts.textContent = r.text;
-				const t = el("title", {}, a); t.textContent = r.link;   // hover shows the URL
-			} else {
-				const klass = r.men ? "men" : r.tag ? "tag" : null;
-				const ts = el("tspan", klass ? {class: klass} : {}, line);
-				ts.textContent = r.text;
-			}
-		}
-	});
-
-	let yb = BODY_TOP + (lay.lines.length - 1) * LINE_H + 6;   // bottom of the text block
-
-	// dumbnails: just <image src=url>, shrunk into the box, alt as a hover title
-	if (lay.img) {
-		const fy = yb + 6;
-		for (const b of lay.img.boxes) {
-			const im = el("image", {x: b.x, y: fy + b.y, width: b.w, height: b.h, href: imgURL(b.c)}, g);
-			if (b.alt) { const t = el("title", {}, im); t.textContent = b.alt; }
-		}
-		yb = fy + lay.img.h;
-	}
-
-	// footer chips
-	if (lay.chips.length) {
-		const foot = el("text", {x: PAD, y: yb + 8 + 5, class: "foot"}, g);
-		lay.chips.forEach((c, i) => {
-			if (i) { const sp = el("tspan", {}, foot); sp.textContent = "   "; }
-			let host = foot;
-			if (c.url) { host = el("a", {href: c.url}, foot); host.addEventListener("click", (ev) => ev.stopPropagation()); }
-			const ts = el("tspan", {class: c.cls}, host);
-			ts.textContent = c.label;
-			if (c.title) { const t = el("title", {}, ts); t.textContent = c.title; }
-		});
-	}
-
+	const g = el("g", {"data-rkey": rkey});
 	g.addEventListener("click", (ev) => {
 		if (didDrag) return;
+		if (ev.target.closest("a")) return;                    // a real link inside the card — let it navigate
 		ev.stopPropagation();
-		if (e.tweet) return;                                   // X link is the footer chip only
+		if (e.tweet) return;                                   // a tweet only links out (name/chip); the node itself does nothing
 		if (ev.ctrlKey || ev.metaKey) toggleThread(rkey);      // merge / un-merge this post's thread
 		else navigate(rkey);
 	});
 	return g;
 }
 
+function fillNode(g, rkey, h, cls, badge, dbl) {
+	const e = INDEX[rkey];
+	// Authored posts get .au (tint); markFocal adds .focal to those by the focused author.
+	const authored = !e.tweet && !(cls || "").includes("quote");
+	g.setAttribute("class", "node " + (cls || "") + (e.tweet ? " tweet" : authored ? " au" : ""));
+	g.replaceChildren();                                                                // wipe innards (keeps the click handler on g)
+	el("rect", {width: NODE_W, height: h, rx: 6}, g);                                   // box: border + fill (+ variants)
+	if (dbl) el("rect", {x: 3, y: 3, width: NODE_W - 6, height: h - 6, rx: 4, class: "dbl"}, g);
+	// the whole post is one HTML card; the browser wraps the text and lays out the media
+	const fo = el("foreignObject", {x: 0, y: 0, width: NODE_W, height: h}, g);
+	const art = document.createElement("div");
+	art.className = "post";
+	art.innerHTML = postHTML(rkey, badge);
+	fo.appendChild(art);
+}
+
+// The fold tag: a flat body that holds the count, with a chevron pointing the way the
+// fold eats the tree — down = the subtree below is hidden, up = the ancestors above are.
+// (w widens with the digit count.) Rounded on the flat side, pointed on the fold side.
+function toggleShape(parent, w, down) {
+	const r = 5, tail = 4, T = -8.5, B = 8.5, L = -w / 2, R = w / 2;
+	const d = down
+		? `M ${L + r} ${T} H ${R - r} Q ${R} ${T} ${R} ${T + r} V ${B} L 0 ${B + tail} L ${L} ${B} V ${T + r} Q ${L} ${T} ${L + r} ${T} Z`
+		: `M ${L + r} ${B} H ${R - r} Q ${R} ${B} ${R} ${B - r} V ${T} L 0 ${T - tail} L ${L} ${T} V ${B - r} Q ${L} ${B} ${L + r} ${B} Z`;
+	return el("path", {d, class: "ctbg"}, parent);
+}
+
+// Collapse/expand toggle at the bottom-centre of a node with children — right
+// where the reply edges fan out. "–" when open, "+<hidden descendants>" when
+// folded; clicking flips it and relayouts (PINS is unchanged, so drop the fast-path).
+function addCollapseToggle(g, rk, h) {
+	const txt = COLLAPSED.has(rk) ? String(descendantCount(rk)) : "–";   // open shows "–"; folded shows the hidden count
+	const w = Math.max(17, txt.length * 7 + 10);                          // narrow for "–"/one digit, widen for bigger counts
+	const t = el("g", {class: "ctoggle", transform: `translate(${NODE_W / 2}, ${h})`}, g);
+	toggleShape(t, w, true);                                              // points down: the subtree below is folded away
+	const lbl = el("text", {class: "ctlbl", "text-anchor": "middle", y: 3.5}, t);
+	lbl.textContent = txt;
+	t.addEventListener("click", (ev) => {
+		ev.stopPropagation();
+		COLLAPSED.has(rk) ? COLLAPSED.delete(rk) : COLLAPSED.add(rk);
+		pruneCollapsed();                           // a new fold may subsume folds beneath it
+		writeState(false);                          // the fold is part of the view — record it in the hash
+		lastPinsKey = null;
+		render(FOCUS);
+	});
+}
+
+// Mirror of addCollapseToggle, at the TOP of a post on its incoming reply edge.
+// "–" folds the thread upward (hiding parent, siblings and everything above, re-rooting
+// here); "+<hidden>" restores them.
+function addUpToggle(g, rk) {
+	const up = UPCOLLAPSED.has(rk);
+	const txt = up ? String(descendantCount(localRoot(rk)) - descendantCount(rk)) : "–";
+	const w = Math.max(17, txt.length * 7 + 10);
+	const t = el("g", {class: "ctoggle", transform: `translate(${NODE_W / 2}, 0)`}, g);
+	toggleShape(t, w, false);                                            // points up: everything above is folded away
+	const lbl = el("text", {class: "ctlbl", "text-anchor": "middle", y: 3.5}, t);
+	lbl.textContent = txt;
+	t.addEventListener("click", (ev) => {
+		ev.stopPropagation();
+		up ? UPCOLLAPSED.delete(rk) : UPCOLLAPSED.add(rk);
+		// re-rooting here hides the focus if it sat above rk → pull focus down to rk
+		if (!up && !isAncestor(rk, FOCUS) && FOCUS !== rk) FOCUS = rk;
+		pruneCollapsed();
+		writeState(false);
+		lastPinsKey = null;
+		render(FOCUS);
+	});
+}
+
 const pinsKey = () => PINS.join("|");
 
-// The hash holds the whole view: "<focus>" for a single thread, or
-// "<focus>,<root1>,<root2>,…" listing every pinned root for a merged view.
-function hashFor(focus, pins) {
-	// focus already implies its own thread root, so drop that from the list: a
-	// single thread is just "focus", a two-thread merge is "focus,otherRoot".
+// The hash is the single source of truth for the whole view (everything but zoom):
+// "<focus>;<pinnedRoots>;<collapsed>", three comma-lists separated by ";". Focus
+// already implies its own thread root, so that's dropped from the pinned list; the
+// other two lists are sorted, so a given view always yields one canonical hash (and
+// one hash always rebuilds the same view). Trailing empty sections are omitted, so a
+// lone thread is just "<focus>".
+// Keep COLLAPSED to just the folds that actually shape the visible graph: drop any
+// whose thread isn't pinned, and any sitting under a higher collapse — a fold inside
+// an already-folded subtree is invisible, so it must not linger in the set or hash
+// (else two identical graphs could carry different hashes).
+function pruneCollapsed() {
+	// Up-folds: drop those whose thread isn't pinned, and any with a deeper up-fold
+	// below them on the same path (the deeper one already hides everything above it).
+	for (const rk of [...UPCOLLAPSED]) {
+		if (!INDEX[rk] || !PINS.includes(localRoot(rk))) { UPCOLLAPSED.delete(rk); continue; }
+		for (const o of UPCOLLAPSED) if (o !== rk && isAncestor(rk, o)) { UPCOLLAPSED.delete(rk); break; }
+	}
+	// Down-folds: drop those whose thread isn't pinned, those hidden under a higher
+	// down-fold, and those sitting outside a re-rooted thread's visible subtree.
+	for (const rk of [...COLLAPSED]) {
+		if (!INDEX[rk] || !PINS.includes(localRoot(rk))) { COLLAPSED.delete(rk); continue; }
+		let dead = false;
+		for (let p = INDEX[rk].p; p && INDEX[p] && !dead; p = INDEX[p].p) if (COLLAPSED.has(p)) dead = true;
+		if (!dead) {
+			const ups = [...UPCOLLAPSED].filter(u => localRoot(u) === localRoot(rk));
+			if (ups.length && !ups.some(u => u === rk || isAncestor(u, rk))) dead = true;
+		}
+		if (dead) COLLAPSED.delete(rk);
+	}
+}
+
+// "<focus>;<pinnedRoots>;<down-collapsed>;<up-collapsed>" — four comma-lists. Down
+// folds hide a subtree; up folds re-root a thread. All lists sorted so the view is
+// canonical both ways; trailing empty sections are trimmed.
+function hashFor(focus, pins, collapsed, upcollapsed) {
 	const fr = localRoot(focus);
-	return [focus, ...pins.filter(p => p !== fr)].join(",");
+	const roots = pins.filter(p => p !== fr).map(refOf).sort();
+	return [refOf(focus), roots.join(","), [...collapsed].map(refOf).sort().join(","), [...upcollapsed].map(refOf).sort().join(",")]
+		.join(";").replace(/;+$/, "");
 }
 
 // lastShown tracks the hash we last acted on, so the popstate+hashchange pair a
 // single history move fires (and our own writes) don't re-trigger a restore.
-function writeHash(focus, pins, replace) {
-	const hash = "#" + hashFor(focus, pins);
+function writeHash(focus, pins, collapsed, upcollapsed, replace) {
+	const hash = "#" + hashFor(focus, pins, collapsed, upcollapsed);
 	if (replace) history.replaceState(null, "", hash);
 	else history.pushState(null, "", hash);
 	lastShown = location.hash;
+	syncURL();
 }
+// The header URL field is a window into the hash: it shows the current view's hash
+// and editing it loads that thread (a pasted post URL is normalised to a token first).
+const syncURL = () => { $("#url").value = decodeURIComponent(location.hash.slice(1)); };
+// Write the live view (focus + pins + both fold sets) — used by the fold toggles.
+const writeState = (replace) => writeHash(FOCUS, PINS, COLLAPSED, UPCOLLAPSED, replace);
 
 function parseHash() {
-	const parts = decodeURIComponent(location.hash.slice(1)).split(",").filter(Boolean);
-	const focus = parts[0];
-	if (!focus || !INDEX[focus]) return null;
-	// Return the pinned roots verbatim — they may name outside thread roots we
-	// don't hold yet (showHash fetches those before pinning). Filtering here is
-	// what dropped merged outside threads on reload.
-	return {focus, roots: parts.slice(1)};
+	const raw = decodeURIComponent(location.hash.slice(1));
+	if (!raw) return null;
+	// A pasted at:// URI or bsky.app post URL is a one-post network view.
+	const pasted = normalizeRef(raw);
+	if (pasted) return {focus: pasted, roots: [], collapsed: [], up: []};
+	const [focus, rootsStr = "", colStr = "", upStr = ""] = raw.split(";");
+	// A local focus must be held; a network focus ("did/rkey") is fetched by showView.
+	if (!focus || (!parseRef(focus).did && !INDEX[focus])) return null;
+	return {focus, roots: rootsStr.split(",").filter(Boolean),
+		collapsed: colStr.split(",").filter(Boolean), up: upStr.split(",").filter(Boolean)};
 }
 
 // The one way a view is shown. A view is a focus post plus a set of pinned
@@ -716,37 +772,59 @@ function parseHash() {
 // connecting posts exist), then resolve each root to a concrete local root we
 // hold, pin them, and draw — once. The hash is the source of truth, so shared
 // URLs and Back/Forward replay the exact (possibly merged) view.
-async function showView(focus, roots, push) {
-	if (!INDEX[focus]) return;
+async function showView(focus, roots, push, collapsed, up) {
 	const replace = !push || FOCUS === null;        // captured before any await
-	// Outside threads referenced by the focus or the pinned roots, not yet pulled in.
-	const groups = new Set();
-	if (INDEX[focus].xr) groups.add(INDEX[focus].xr);
-	for (const r of roots) if (EXTGROUPS[r]) groups.add(r);
-	const pending = [...groups].filter(g => EXTSTATE[g] !== "done");
-	if (pending.length) {
-		setStatus("Loading outside thread…");
-		await Promise.all(pending.map(injectGroup));
+	// focus/roots arrive as tokens: a bare rkey (local archive) or "did/rkey" (a post
+	// from anywhere on the network). Network posts we don't hold yet get their whole
+	// thread pulled — both directions — before we pin anything.
+	const fRef = parseRef(focus), rootRefs = roots.map(parseRef);
+	// One fetch path. A referenced post's thread is pulled from the API (fetchThread,
+	// FETCHED-deduped) when we don't already hold it: a "did/rkey" token from the hash/
+	// URL, an external stub already in INDEX that the user clicked to expand, or one of
+	// our own posts that replied into an outside thread (pull that outside thread —
+	// preferring its root, so every sibling of ours under it comes back too).
+	const uriFor = (did, rk) => `at://${did}/app.bsky.feed.post/${rk}`;
+	const toFetch = [], want = (did, rk) => { if (did && !FETCHED.has(uriFor(did, rk))) toFetch.push({did, rkey: rk}); };
+	for (const r of [fRef, ...rootRefs]) {
+		const e = INDEX[r.rkey];
+		if (r.did) want(r.did, r.rkey);
+		else if (e && e.external && e.did) want(e.did, r.rkey);
+		else if (e && e.xp) want(e.xrd || DID, e.xr || r.rkey);
+	}
+	const focusRk = fRef.rkey;
+	// A hash restore carries both fold sets; force a real relayout, since a fold set —
+	// not PINS — may be what changed.
+	if (collapsed) lastPinsKey = null;
+	// Resolve roots to local roots from whatever's in INDEX *right now* and draw. Called
+	// once up front (instant, from cache) and again as each fetch lands, so a merged or
+	// shared view fills in thread-by-thread instead of waiting for every request.
+	const paint = () => {
+		if (!INDEX[focusRk]) return;                 // focus not loaded yet — a later fetch will paint it
+		// A restored fold names posts that may only arrive by fetch, so re-apply both sets
+		// from what's in INDEX on every paint (same as pins below), not once up front.
+		if (collapsed) {
+			COLLAPSED.clear();
+			for (const t of collapsed) { const rk = parseRef(t).rkey; if (INDEX[rk]) COLLAPSED.add(rk); }
+			UPCOLLAPSED.clear();
+			for (const t of up || []) { const rk = parseRef(t).rkey; if (INDEX[rk]) UPCOLLAPSED.add(rk); }
+		}
+		const pins = [], seen = new Set();
+		const add = (rk) => { if (rk && !seen.has(rk)) { seen.add(rk); pins.push(rk); } };
+		for (const r of rootRefs) if (INDEX[r.rkey]) add(localRoot(r.rkey));
+		add(localRoot(focusRk));
+		pins.sort();                                 // canonical: same threads always lay out + hash the same
+		FOCUS = focusRk; PINS = pins;
+		pruneCollapsed();
+		render(focusRk);
+	};
+	paint();
+	if (toFetch.length) {
+		setStatus("Loading thread…");
+		await Promise.all(toFetch.map(f => fetchThread(f).then(paint)));
 		setStatus("");
 	}
-	// Resolve roots to local roots now that the connecting posts are in INDEX;
-	// an outside root we couldn't fetch falls back to its group members' roots.
-	// Preserve the given order and only append the focus's own root if it's
-	// missing — prepending it would reshuffle the trees and change pinsKey, which
-	// is what made plain clicks relayout/refit instead of just moving the focus.
-	const pins = [], seen = new Set();
-	const add = (rk) => { if (rk && !seen.has(rk)) { seen.add(rk); pins.push(rk); } };
-	for (const r of roots) {
-		if (INDEX[r]) add(localRoot(r));
-		else if (EXTGROUPS[r]) EXTGROUPS[r].forEach(m => add(localRoot(m)));
-	}
-	add(localRoot(focus));
-	// Don't reset lastPinsKey: render's fast path then just moves the focus and
-	// pans when the pinned set is unchanged (a plain click), and relayouts only
-	// when PINS actually changed (a merge, or freshly assembled outside thread).
-	FOCUS = focus; PINS = pins;
-	writeHash(focus, PINS, replace);
-	render(focus);
+	// Canonical hash once, on the settled view (intermediate paints don't touch history).
+	if (INDEX[focusRk]) writeHash(focusRk, PINS, COLLAPSED, UPCOLLAPSED, replace);
 }
 
 // Normal click: focus a post. If its thread is already on screen, keep the
@@ -773,6 +851,8 @@ function toggleThread(rkey) {
 
 function render(focus) {
 	FOCUS = focus;
+	finalizeAnim();                      // settle any in-flight stagger before this render reconciles
+	updateHeader(focus);                 // top-left reflects the focused author (both paths)
 	$("#hint").style.display = "none";
 
 	// keep the sidebar's active highlight in sync as the pinned set changes (the
@@ -788,131 +868,239 @@ function render(focus) {
 		return;
 	}
 
-	const {tree, quoteEdges, satNodes, satEdges, treeKids, grafts} = buildVisible(PINS);
-
-	// Per-node wrapped text + height, cached for this view.
-	const LAY = {};
-	const H = (rk) => LAY[rk].h;
-	for (const rk of tree) LAY[rk] = nodeLayout(rk);
-	for (const s of satNodes) if (!LAY[s.rkey]) LAY[s.rkey] = nodeLayout(s.rkey);
-
-	// Quote satellites split by direction so a post can use both gutters: incoming
-	// quotes (posts that quote this one) stack to its left, outgoing quotes (posts
-	// or tweets this one quotes) to its right. A gutter is reserved per populated side.
-	const satsIn = {}, satsOut = {};
-	for (const s of satNodes) {
-		const m = s.dir === "in" ? satsIn : satsOut;
-		(m[s.anchor] || (m[s.anchor] = [])).push(s);
-	}
-	const stackH = (list) => list && list.length ? list.reduce((a, s) => a + LAY[s.rkey].h, 0) + SAT_VGAP * (list.length - 1) : 0;
-	const gutterW = (list) => list && list.length ? SAT_GAP + NODE_W : 0;
-	const leftG = (rk) => gutterW(satsIn[rk]);
-	const allocW = (rk) => leftG(rk) + NODE_W + gutterW(satsOut[rk]);
-	const rowH = (rk) => Math.max(H(rk), stackH(satsIn[rk]), stackH(satsOut[rk]));
-
-	// Lay each pinned thread as a non-layered tidy tree (flextree: children sit a
-	// fixed distance below their parent, packed by contour — no global depth rows),
-	// then stack the pins left-to-right into a forest.
-	const fl = window.d3.flextree()
-		.nodeSize(d => [allocW(d.data.rk), rowH(d.data.rk) + V_GAP])
-		.spacing(() => H_GAP);
-	const toData = (rk) => ({rk, children: treeKids[rk].map(toData)});
-	const cxy = {}, laneOf = {};                 // flextree centres (forest-offset) + pin index per node
-	let cursor = 0;
-	PINS.forEach((root, pi) => {
-		const t = fl.hierarchy(toData(root));
-		fl(t);
-		let lo = Infinity, hi = -Infinity;
-		t.each(n => { const w = allocW(n.data.rk); lo = Math.min(lo, n.x - w / 2); hi = Math.max(hi, n.x + w / 2); });
-		const dx = cursor - lo;
-		t.each(n => { cxy[n.data.rk] = {x: n.x + dx, y: n.y}; laneOf[n.data.rk] = pi; });
-		cursor = hi + dx + FOREST_GAP;
-	});
-
-	// Slide each merged lane vertically so its quote link lines up with the post it
-	// branches from (lanes are in separate horizontal bands, so this can't collide).
-	for (let i = 1; i < PINS.length; i++) {
-		const link = quoteEdges.find(e =>
-			(laneOf[e.from] === i && laneOf[e.to] < i) || (laneOf[e.to] === i && laneOf[e.from] < i));
-		if (!link) continue;
-		const mine = laneOf[link.from] === i ? link.from : link.to;
-		const dy = cxy[mine === link.from ? link.to : link.from].y - cxy[mine].y;
-		if (dy) for (const rk of tree) if (laneOf[rk] === i) cxy[rk].y += dy;
-	}
-
-	// Convert centres → top-left boxes; drop each satellite stack into its gutter,
-	// vertically centred on the post (incoming left, outgoing right).
-	const pos = {}, satPos = {};
-	const stackInto = (list, x, cy) => {
-		if (!list) return;
-		let y = cy - stackH(list) / 2;
-		for (const s of list) { satPos[s.rkey] = {x, y}; y += LAY[s.rkey].h + SAT_VGAP; }
-	};
+	// Build the visible subgraph, the per-post badge, then MEASURE each post's height
+	// by rendering its HTML card offscreen — that height feeds the (pure) tidy-tree
+	// packing. The browser does the wrapping and content layout; we only place boxes.
+	const view = buildVisible(PINS);
+	const {tree, treeKids, grafts, quoteEdges, satNodes, satEdges} = view;
+	const badge = {};
 	for (const rk of tree) {
-		const c = cxy[rk], boxLeft = c.x - allocW(rk) / 2, postLeft = boxLeft + leftG(rk);
-		const mid = c.y + (rowH(rk) + V_GAP) / 2;                  // flextree's y is the box top; centre content in the row
-		pos[rk] = {x: postLeft, y: mid - H(rk) / 2};
-		stackInto(satsIn[rk], boxLeft, mid);                       // left gutter
-		stackInto(satsOut[rk], postLeft + NODE_W + SAT_GAP, mid);  // right gutter
+		const e = INDEX[rk];
+		badge[rk] = grafts.has(rk) ? (e.tweet ? "𝕏 " + (e.a || "post") : "↪ quoted")
+			: e.external ? (e.name || "@" + (e.handle || ""))   // their display name, @handle if unset
+			: e.tweet ? "𝕏 " + (e.a || "post")
+			: (META.name || "").slice(0, 24);                 // our own posts: the account name, like others' @handle
 	}
+	for (const s of satNodes) {                              // satellite badge is just the author; the .qout/.qin class adds the relationship label in CSS
+		const e = INDEX[s.rkey];
+		badge[s.rkey] = e.tweet ? "𝕏 " + (e.a || "post") : (e.external ? (e.name || "@" + (e.handle || "")) : (META.name || "")).slice(0, 16);
+	}
+	const hmap = {};
+	for (const rk of tree) hmap[rk] = measureHeight(rk, badge[rk]);
+	for (const s of satNodes) if (!(s.rkey in hmap)) hmap[s.rkey] = measureHeight(s.rkey, badge[s.rkey]);
+	const H = (rk) => hmap[rk];
+	const {pos, satPos, bounds} = computeLayout(view, H);
 
-	// ---- render ----
-	scene.innerHTML = "";
-	const edgeLayer = el("g", {}, scene);
-	const nodeLayer = el("g", {}, scene);
-
-	// reply edges (parent bottom → child top); grafted quote-replies are amber,
-	// links involving a fetched outside post are green (the external colour)
-	for (const rk of tree) {
-		for (const c of treeKids[rk]) {
-			const cls = grafts.has(c) ? "edge graft"
-				: (INDEX[rk].external || INDEX[c].external) ? "edge extedge" : "edge";
-			drawEdge(edgeLayer, pos[rk].x + NODE_W / 2, pos[rk].y + H(rk),
-													pos[c].x + NODE_W / 2, pos[c].y, cls);
+	// Anchor a shared post pixel-stable. Only a node that's both already on screen AND placed
+	// in the new tree (pos) can anchor — the focus itself isn't always placed (a collapsed
+	// connector or a quote target lives outside pos). Reference point: the focus's spot in
+	// the new tree, else where it last sat on screen. Pin the focus if it's a placed survivor,
+	// else the surviving tree node nearest that point. Nothing shared → no anchor.
+	const fg = nodeEls[focus];
+	const fx = pos[focus] ? pos[focus].x : fg && fg.__x;
+	const fy = pos[focus] ? pos[focus].y : fg && fg.__y;
+	let ref = fg && pos[focus] ? focus : null;
+	if (!ref && fx != null) {
+		let best = Infinity;
+		for (const k in pos) {
+			if (!nodeEls[k]) continue;                 // survivor + placed here → a valid anchor
+			const dx = pos[k].x - fx, dy = pos[k].y - fy, d = dx * dx + dy * dy;
+			if (d < best) { best = d; ref = k; }
 		}
 	}
-	// quote edges within tree — arrow lands on the quoted post
-	for (const {from, to} of quoteEdges)
-		el("path", {d: quoteCurve(pos[from], pos[to], H(from), H(to)), class: "edge quoteedge"}, edgeLayer);
-	// satellite quote edges — one per link, so a shared target gets several arrows
-	for (const e of satEdges) {
-		const d = e.dir === "out"
-			? quoteCurve(pos[e.anchor], satPos[e.sat], H(e.anchor), H(e.sat))
-			: quoteCurve(satPos[e.sat], pos[e.anchor], H(e.sat), H(e.anchor));
-		el("path", {d, class: "edge quoteedge"}, edgeLayer);
+	if (ref) {
+		const g = nodeEls[ref], dx = g.__x - pos[ref].x, dy = g.__y - pos[ref].y;
+		if (dx || dy) {
+			for (const k in pos) { pos[k].x += dx; pos[k].y += dy; }
+			for (const k in satPos) { satPos[k].x += dx; satPos[k].y += dy; }
+			bounds[0] += dx; bounds[1] += dy; bounds[2] += dx; bounds[3] += dy;
+		}
 	}
 
-	// nodes
+	// ---- draw (reconcile) ----
+	ensureLayers();
+
+	// One flat list of every node in the view with its target geometry and classes.
+	const items = [];
 	for (const rk of tree) {
-		const g = grafts.has(rk);
-		const badge = g ? (INDEX[rk].tweet ? "𝕏 " + (INDEX[rk].a || "post") : "↪ quoted")
-			: INDEX[rk].external ? "@" + (INDEX[rk].handle || "") : null;
 		const cls = [rk === focus && "focus", PINS.length > 1 && PINS.includes(rk) && "root"].filter(Boolean).join(" ");
-		drawNode(nodeLayer, rk, pos[rk].x, pos[rk].y, LAY[rk], cls, badge, g);
+		items.push({rk, x: pos[rk].x, y: pos[rk].y, h: H(rk), cls, badge: badge[rk], dbl: grafts.has(rk), tree: true});
 	}
 	for (const s of satNodes) {
-		const badge = INDEX[s.rkey].tweet ? "𝕏 " + (INDEX[s.rkey].a || "post")
-													: s.dir === "out" ? "↳ quoted" : "quotes →";
-		drawNode(nodeLayer, s.rkey, satPos[s.rkey].x, satPos[s.rkey].y, LAY[s.rkey], "quote", badge, false);
+		const rel = INDEX[s.rkey].tweet ? "" : s.dir === "out" ? " qout" : " qin";   // CSS turns these into the relationship label
+		items.push({rk: s.rkey, x: satPos[s.rkey].x, y: satPos[s.rkey].y, h: H(s.rkey), cls: "quote" + rel, badge: badge[s.rkey], dbl: false});
+	}
+	const want = new Set(items.map(i => i.rk));
+	const added = [], removed = [];
+	for (const i of items) if (!nodeEls[i.rk]) added.push(i.rk);
+	for (const rk in nodeEls) if (!want.has(rk)) removed.push(rk);
+
+	// Keep/move/create each node. New ones start at opacity 0 (.enter); survivors get
+	// their new transform and glide to it via the CSS transition.
+	for (const i of items) {
+		let g = nodeEls[i.rk];
+		const isNew = !g;
+		if (isNew) { g = makeNode(i.rk); nodeLayer.appendChild(g); nodeEls[i.rk] = g; }
+		fillNode(g, i.rk, i.h, i.cls, i.badge, i.dbl);
+		if (i.tree && !i.dbl) {
+			if (children[i.rk].length) addCollapseToggle(g, i.rk, i.h);
+			if (INDEX[i.rk].p && INDEX[INDEX[i.rk].p]) addUpToggle(g, i.rk);   // has a real parent → can fold upward
+		}
+		g.style.transform = `translate(${i.x}px,${i.y}px)`;
+		g.__x = i.x; g.__y = i.y; g.__h = i.h;
+		if (isNew) g.classList.add("enter");
 	}
 
-	// fit to every placed box (tree + satellites, which may sit left or below)
-	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-	for (const rk of tree) {
-		minX = Math.min(minX, pos[rk].x); minY = Math.min(minY, pos[rk].y);
-		maxX = Math.max(maxX, pos[rk].x + NODE_W); maxY = Math.max(maxY, pos[rk].y + H(rk));
+	// Edges are cheap: rebuild them fresh at final positions and reveal each once both of
+	// its endpoints are showing (so connectors come in with the nodes, hidden during glide).
+	edgeLayer.replaceChildren();
+	edgeItems = [];
+	const addEdge = (p, a, b) => { p.style.opacity = 0; edgeItems.push({el: p, a, b}); };
+	for (const rk of tree) for (const c of treeKids[rk])
+		addEdge(drawEdge(edgeLayer, pos[rk].x + NODE_W / 2, pos[rk].y + H(rk), pos[c].x + NODE_W / 2, pos[c].y,
+			grafts.has(c) ? "edge graft" : "edge"), rk, c);
+	for (const {from, to} of quoteEdges)                            // arrow lands on the quoted post
+		addEdge(el("path", {d: quoteCurve(pos[from], pos[to], H(from), H(to)), class: "edge quoteedge"}, edgeLayer), from, to);
+	for (const e of satEdges) {                                     // one per link, so a shared target gets several arrows
+		const d = e.dir === "out" ? quoteCurve(pos[e.anchor], satPos[e.sat], H(e.anchor), H(e.sat))
+			: quoteCurve(satPos[e.sat], pos[e.anchor], H(e.sat), H(e.anchor));
+		addEdge(el("path", {d, class: "edge quoteedge"}, edgeLayer), e.anchor, e.sat);
 	}
-	for (const s of satNodes) {
-		const p = satPos[s.rkey];
-		minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-		maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + H(s.rkey));
+
+	markFocal(focus);                            // whiten the focused post's author
+	lastPinsKey = pinsKey(); lastPos = pos; lastH = H; lastBounds = bounds;
+
+	// Every view builds in gradually — nothing ever pops in fully formed. A swap changes
+	// both sides at once (old leaves AND new arrives); an in-place edit only adds (expand/
+	// merge) or only removes (collapse/unmerge).
+	const replace = added.length > 0 && removed.length > 0;
+	if (replace && added.length === items.length) {
+		// Nothing in common (a list/search click → unrelated thread): drop the old map at
+		// once and just build the new one. (A bridge swap — a quote click sharing one post —
+		// keeps a survivor, so it falls to the gradual centre-first path below.)
+		dropLeavers(removed);
+		startStagger(added, [], focus, false);
+	} else {
+		// A bridge swap clears centre-first, keeping the fading old map at the edges, clear
+		// of where the new one builds out; an in-place edit retracts leaves-first.
+		startStagger(added, removed, focus, replace);
 	}
-	lastPinsKey = pinsKey(); lastPos = pos; lastH = H; lastBounds = [minX, minY, maxX, maxY];
-	fitView(minX, minY, maxX, maxY);
 	markSearchHits();                            // freshly drawn nodes pick up the active search
 }
 
+// Create the two persistent layers inside #scene once; renders reconcile into them.
+function ensureLayers() {
+	if (nodeLayer) return;
+	edgeLayer = el("g", {}, scene);
+	nodeLayer = el("g", {}, scene);
+}
+
+const nodeShowing = (rk) => { const g = nodeEls[rk]; return g && !g.classList.contains("enter") && !g.classList.contains("leave"); };
+// An edge shows only when both its endpoints are visible.
+function refreshEdges() { for (const it of edgeItems) it.el.style.opacity = (nodeShowing(it.a) && nodeShowing(it.b)) ? 1 : 0; }
+
+// Camera fit to whatever nodes are visible right now (drives the gradual rezoom).
+function fitVisible(animate) {
+	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
+	for (const rk in nodeEls) {
+		if (!nodeShowing(rk)) continue;
+		const g = nodeEls[rk]; any = true;
+		minX = Math.min(minX, g.__x); minY = Math.min(minY, g.__y);
+		maxX = Math.max(maxX, g.__x + NODE_W); maxY = Math.max(maxY, g.__y + g.__h);
+	}
+	if (any) fitView(minX, minY, maxX, maxY, animate, CAM_MS);
+}
+
+function dropLeavers(list) { for (const rk of list) { const g = nodeEls[rk]; if (g) { g.remove(); delete nodeEls[rk]; } } }
+
+// Reveal added nodes inward-out and hide removed ones outward-in, a few per step. The
+// camera holds still while the old map is destroyed and only begins fitting once the new
+// nodes start building, so it follows growth rather than chasing disappearing nodes.
+function startStagger(added, removed, focusRk, replace) {
+	const f = nodeEls[focusRk], cx = f.__x + NODE_W / 2, cy = f.__y + f.__h / 2;
+	const dist = (rk) => { const g = nodeEls[rk]; const dx = g.__x + NODE_W / 2 - cx, dy = g.__y + g.__h / 2 - cy; return dx * dx + dy * dy; };
+	added.sort((a, b) => dist(a) - dist(b));      // nearest the focus first → grows outward
+	// In-place edits (collapse) retract leaves-first toward the join; a wholesale swap
+	// clears centre-first, so the fading old map keeps to the edges while the new one
+	// grows out from the middle — the two stay out of phase and barely overlap.
+	removed.sort((a, b) => replace ? dist(a) - dist(b) : dist(b) - dist(a));
+	const queue = removed.map(rk => ["leave", rk]).concat(added.map(rk => ["enter", rk]));
+	const batch = Math.max(1, Math.ceil(queue.length / 6));   // one at a time for small changes; bounded to a few steps for big ones
+	let i = 0;
+	const step = () => {                          // reveal/hide the next batch; true once the queue is drained
+		let built = false;
+		for (let b = 0; b < batch && i < queue.length; b++, i++) {
+			const [op, rk] = queue[i];
+			if (op === "enter") { nodeEls[rk].classList.remove("enter"); built = true; }
+			else nodeEls[rk].classList.add("leave");
+		}
+		refreshEdges();
+		if (built) fitVisible(true);              // camera follows the build only — it holds still while old nodes are destroyed
+		return i >= queue.length;
+	};
+	const finish = () => { if (removed.length) setTimeout(() => dropLeavers(removed), 300); };
+	// Nothing on screen yet (old map dropped, or first load) → start the build now instead
+	// of after a blank step.
+	if (!Object.keys(nodeEls).some(nodeShowing) && step()) { finish(); return; }
+	staggerTimer = setInterval(() => {
+		if (step()) { clearInterval(staggerTimer); staggerTimer = null; finish(); }
+	}, STEP_MS);
+}
+
+// Cut any running stagger to its end state instantly (called before each new render).
+function finalizeAnim() {
+	if (staggerTimer) { clearInterval(staggerTimer); staggerTimer = null; }
+	for (const rk in nodeEls) {
+		const g = nodeEls[rk];
+		if (g.classList.contains("leave")) { g.remove(); delete nodeEls[rk]; }
+		else g.classList.remove("enter");
+	}
+	refreshEdges();
+}
+
 const rkeyOf = (uri) => uri.split("/").pop();
+
+// A node's hash token: bare rkey for the local archive, "did/rkey" for a post from
+// elsewhere on the network (rkeys aren't globally unique and can't be resolved to a
+// DID, so the DID must travel in the hash to be re-fetchable).
+const refOf = (rk) => { const did = INDEX[rk] && INDEX[rk].did; return did && did !== DID ? `${did}/${rk}` : rk; };
+// Inverse: split a token into {did, rkey}. did === null means "look in the local repo".
+const parseRef = (tok) => { const i = tok.indexOf("/"); return i < 0 ? {did: null, rkey: tok} : {did: tok.slice(0, i), rkey: tok.slice(i + 1)}; };
+// Turn a pasted at:// URI or bsky.app post URL into an "authority/rkey" focus token
+// (authority may be a handle — the AppView resolves it and we keep the real DID).
+function normalizeRef(raw) {
+	let m = raw.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/?#]+)/)
+		|| raw.match(/bsky\.app\/profile\/([^/]+)\/post\/([^/?#]+)/);
+	return m ? `${m[1]}/${m[2]}` : null;
+}
+
+// FETCHED guards thread pulls (keyed by at-uri) so each is fetched once.
+const FETCHED = new Set();
+// Pull a whole thread for a post anywhere on the network in ONE getPostThread call —
+// ancestors via .parent (backward) and replies via .replies (forward) — and inject
+// every post we don't already hold. authority may be a DID or a handle.
+async function fetchThread(ref) {
+	const uri = `at://${ref.did}/app.bsky.feed.post/${ref.rkey}`;
+	if (FETCHED.has(uri)) return;
+	FETCHED.add(uri);
+	let thread;
+	try {
+		const resp = await fetch(`${APPVIEW}/app.bsky.feed.getPostThread`
+			+ `?uri=${encodeURIComponent(uri)}&depth=20&parentHeight=80`);
+		if (!resp.ok) { if (resp.status === 429) setStatus("Rate-limited by Bluesky — slow down a moment."); return; }
+		thread = (await resp.json()).thread;
+	} catch (err) { console.warn("fetchThread failed", uri, err); return; }
+	if (!thread || !thread.post) return;
+	const addNode = (post) => INDEX[rkeyOf(post.uri)] ? rkeyOf(post.uri) : injectExternal(post);
+	const focusRk = addNode(thread.post);
+	for (let n = thread.parent, child = focusRk; n && n.post && n.post.uri; n = n.parent) {
+		const rk = addNode(n.post); linkReply(rk, child); child = rk;            // backward
+	}
+	(function down(n) {                                                          // forward
+		const prk = addNode(n.post);
+		for (const r of n.replies || []) if (r && r.post && r.post.uri) { linkReply(prk, addNode(r.post)); down(r); }
+	})(thread);
+}
 
 // Add a fetched outside post to INDEX as a real (external) node, if we don't
 // already hold it. Our own posts stay untouched.
@@ -923,13 +1111,66 @@ function injectExternal(post) {
 		external: true,
 		did: post.author.did,
 		handle: post.author.handle || "",
+		name: post.author.displayName || "",   // friendlier than @handle when present
+		avatar: post.author.avatar || "",       // full CDN URL, straight from the view
 		t: (post.record && post.record.text) || "",
 		d: (post.record && post.record.createdAt) || "",
 		rkey: rk,
 	};
 	if (post.record && post.record.facets) INDEX[rk].f = post.record.facets;
+	Object.assign(INDEX[rk], mediaFrom(post.embed));   // images / link card / video, from the same view
 	children[rk] = children[rk] || [];
 	quotedBy[rk] = quotedBy[rk] || [];
+	// What this post quotes rides along in its embed — inject that post (no extra call)
+	// and record the link both ways, so network posts get quote edges like our own do.
+	const qrk = injectQuoted(post.embed);
+	if (qrk && qrk !== rk) { INDEX[rk].q = [qrk]; (quotedBy[qrk] || (quotedBy[qrk] = [])).push(rk); }
+	return rk;
+}
+
+// Lift the displayable media out of an embed view — pre-resolved URLs, no extra call.
+// Mirrors the archive's {img, ext, vid} shape so the renderer treats both the same.
+// recordWithMedia carries its media beside the quote; the quote is handled separately.
+function mediaFrom(embed) {
+	if (!embed) return null;
+	const t = embed["$type"];
+	if (t === "app.bsky.embed.recordWithMedia#view") return mediaFrom(embed.media);
+	if (t === "app.bsky.embed.images#view")
+		return {img: embed.images.map(im => ({u: im.fullsize, a: im.alt || "", ar: im.aspectRatio ? [im.aspectRatio.width, im.aspectRatio.height] : null}))};
+	if (t === "app.bsky.embed.external#view") {
+		const x = embed.external || {};
+		return {ext: {u: x.uri, t: x.title || "", d: x.description || "", thumb: x.thumb || ""}};
+	}
+	if (t === "app.bsky.embed.video#view") return {vid: true, vthumb: embed.thumbnail || ""};
+	return null;
+}
+
+// Pull a quoted post straight out of an embed view (record or record-with-media) and
+// inject it as a node. Returns its rkey, or null if there's nothing quoted / it's a
+// blocked/detached/not-found quote. The embedded view carries the quoted post in full.
+function injectQuoted(embed) {
+	if (!embed) return null;
+	const rec = embed["$type"] === "app.bsky.embed.record#view" ? embed.record
+		: embed["$type"] === "app.bsky.embed.recordWithMedia#view" ? embed.record && embed.record.record
+		: null;
+	if (!rec || rec["$type"] !== "app.bsky.embed.record#viewRecord" || !rec.uri || !rec.author) return null;
+	const rk = rkeyOf(rec.uri);
+	if (!INDEX[rk]) {
+		INDEX[rk] = {
+			external: true,
+			did: rec.author.did,
+			handle: rec.author.handle || "",
+			name: rec.author.displayName || "",
+			avatar: rec.author.avatar || "",
+			t: (rec.value && rec.value.text) || "",
+			d: (rec.value && rec.value.createdAt) || "",
+			rkey: rk,
+		};
+		if (rec.value && rec.value.facets) INDEX[rk].f = rec.value.facets;
+		Object.assign(INDEX[rk], mediaFrom((rec.embeds || [])[0]));   // the quoted post's own media
+		children[rk] = children[rk] || [];
+		quotedBy[rk] = quotedBy[rk] || [];
+	}
 	return rk;
 }
 
@@ -944,49 +1185,14 @@ function linkReply(parentRk, childRk) {
 	}
 }
 
-// Pull in the connecting outside posts for one outside-thread group and inject
-// them as green nodes, so our posts that share that root chain together through
-// them. For each member we ask the public AppView for a couple of ancestors
-// (getPostThread with a small parentHeight). Pure data side-effect — no pinning
-// or rendering. Guarded by EXTSTATE so each root is fetched once; concurrent
-// callers await the same in-flight promise. No auth needed.
-function injectGroup(root) {
-	if (EXTSTATE[root]) return EXTSTATE[root] === "done" ? Promise.resolve() : EXTSTATE[root];
-	const job = (async () => {
-		const members = EXTGROUPS[root] || [];
-		const chains = await Promise.all(members.map(async (m) => {
-			try {
-				const uri = `at://${DID}/app.bsky.feed.post/${m}`;
-				const resp = await fetch(`${APPVIEW}/app.bsky.feed.getPostThread`
-					+ `?uri=${encodeURIComponent(uri)}&depth=0&parentHeight=2`);
-				if (!resp.ok) return null;
-				return (await resp.json()).thread;
-			} catch (err) { console.warn("injectGroup fetch failed", err); return null; }
-		}));
-		for (const thread of chains) {
-			// Walk the parent links upward: each node's post is the parent of the one
-			// below it. Stop at the root or at a deleted/blocked node (no .post).
-			let node = thread, childRk = null;
-			while (node && node.post && node.post.uri) {
-				const rk = node.post.author.did === DID ? rkeyOf(node.post.uri) : injectExternal(node.post);
-				if (childRk) linkReply(rk, childRk);
-				childRk = rk;
-				node = node.parent;
-			}
-		}
-		EXTSTATE[root] = "done";
-	})();
-	EXTSTATE[root] = job;
-	return job;
-}
-
 // Restore the view encoded in the hash (shared link, reload, Back/Forward).
 // Just hand the focus + named roots to showView, which fetches what it needs.
 function showHash(initial) {
 	if (!initial && location.hash === lastShown) return;   // popstate+hashchange both fire one move
 	lastShown = location.hash;
+	syncURL();
 	const v = parseHash();
-	if (v) showView(v.focus, v.roots, false);
+	if (v) showView(v.focus, v.roots, false, v.collapsed, v.up);
 	else { const f = topThreads()[0]; if (f) navigate(f.rkey); }
 }
 
@@ -995,6 +1201,14 @@ function setFocusNode(focus) {
 	scene.querySelectorAll("g.node.focus").forEach(n => n.classList.remove("focus"));
 	const n = scene.querySelector(`g.node[data-rkey="${CSS.escape(focus)}"]`);
 	if (n) n.classList.add("focus");
+	markFocal(focus);
+}
+
+// Whiten the focused post's author: tag every authored node by that author with .focal.
+// Paint-only (fill/stroke), so it's cheap on refocus; no per-author slot rules, no cap.
+function markFocal(focus) {
+	const fa = authorDid(focus);
+	for (const rk in nodeEls) nodeEls[rk].classList.toggle("focal", nodeEls[rk].classList.contains("au") && authorDid(rk) === fa);
 }
 
 // Ring the graph nodes whose text matches the search box, so a post can be found
@@ -1016,7 +1230,7 @@ function panIntoView(focus) {
 	let dx = 0, dy = 0;
 	if (x1 < m) dx = m - x1; else if (x2 > rect.width - m) dx = rect.width - m - x2;
 	if (y1 < m) dy = m - y1; else if (y2 > rect.height - m) dy = rect.height - m - y2;
-	if (dx || dy) { tx += dx; ty += dy; applyTransform(); }
+	if (dx || dy) animateTo(tx + dx, ty + dy, scale);
 }
 
 // Quote-edge path from box s to box d. The line may leave s in any direction; it
@@ -1066,15 +1280,14 @@ function quoteCurve(s, d, hs, hd) {
 	return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`;
 }
 
-function fitView(minX, minY, maxX, maxY) {
+function fitView(minX, minY, maxX, maxY, animate = true, ms) {
 	const rect = svg.getBoundingClientRect();
-	const w = maxX - minX, h = maxY - minY;
-	const margin = 40;
-	const s = Math.min((rect.width - margin) / w, (rect.height - margin) / h, 1.4);
-	scale = Math.max(0.05, s);
-	tx = (rect.width - w * scale) / 2 - minX * scale;
-	ty = Math.max(margin / 2, (rect.height - h * scale) / 2) - minY * scale;
-	applyTransform();
+	const w = maxX - minX, h = maxY - minY, margin = 40;
+	const ns = Math.max(0.05, Math.min((rect.width - margin) / w, (rect.height - margin) / h, 1.4));
+	const nx = (rect.width - w * ns) / 2 - minX * ns;
+	const ny = Math.max(margin / 2, (rect.height - h * ns) / 2) - minY * ns;
+	if (animate) animateTo(nx, ny, ns, ms);    // ms omitted → animateTo's own default; the stagger passes a longer, gentler ease
+	else { stopCam(); tx = nx; ty = ny; scale = ns; applyTransform(); }
 }
 
 // ---------- interaction (pointer events cover mouse, touch and pen) ----------
@@ -1088,6 +1301,7 @@ let pinchDist = 0, pinchMx = 0, pinchMy = 0;   // last pinch gap + midpoint (svg
 // Zoom by `factor` about a point (px,py) measured from the svg's top-left, so the
 // point under the cursor / pinch centre stays put. Shared by wheel and pinch.
 function zoomAt(factor, px, py) {
+	stopCam();
 	const ns = Math.max(0.05, Math.min(3, scale * factor));
 	tx = px - (px - tx) * (ns / scale);
 	ty = py - (py - ty) * (ns / scale);
@@ -1104,6 +1318,7 @@ function startPinch() {
 }
 
 svg.addEventListener("pointerdown", (e) => {
+	stopCam();                                    // manual input cancels any camera animation
 	pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
 	if (pointers.size >= 2) {                     // second finger → pinch, not pan
 		panning = false;
@@ -1159,6 +1374,27 @@ svg.addEventListener("wheel", (e) => {
 }, {passive: false});
 
 $("#fit").onclick = () => { if (lastBounds) fitView(...lastBounds); };
+
+// The URL field sets the hash, which drives everything (hashchange → showHash). A
+// pasted at:// URI or bsky.app post URL becomes a focus token; a pasted link to this
+// page contributes its own fragment; anything else is taken as the hash verbatim.
+$("#url").addEventListener("change", () => {
+	let v = $("#url").value.trim();
+	if (!v) return;
+	v = normalizeRef(v) || (v.includes("#") ? v.slice(v.indexOf("#") + 1) : v);
+	location.hash = v;
+	$("#url").blur();
+});
+
+// Manual light/dark flip. The current theme is the forced color-scheme if one is
+// set, else whatever the OS prefers; clicking forces the opposite and remembers it.
+$("#theme").onclick = () => {
+	const cs = document.documentElement.style.colorScheme;
+	const dark = cs ? cs === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+	const next = dark ? "light" : "dark";
+	document.documentElement.style.colorScheme = next;
+	localStorage.setItem("theme", next);
+};
 // type=search clears via the native ✕ (and Esc); its input event rebuilds the list.
 // Debounced (~0.7s) so it runs once you pause typing, not on every keystroke.
 let searchTimer;
@@ -1195,8 +1431,6 @@ $("#sidebar").addEventListener("mouseover", (e) => {
 	setKin(li ? li.dataset.group : null);
 });
 $("#sidebar").addEventListener("mouseleave", () => setKin(null));
-// Hiding the list (CSS) widens the canvas; refit to use it.
-$("#hidelist").addEventListener("change", () => { if (lastBounds) fitView(...lastBounds); });
 // Back/Forward (popstate) and manual hash edits (hashchange) restore the named
 // view, fetching any outside threads it references. Both events fire for one
 // history move; showHash's lastShown guard collapses them to a single restore.

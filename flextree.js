@@ -1,9 +1,6 @@
-(function (global, factory) {
-	typeof exports === 'object' && typeof module !== 'undefined' ? factory(exports) :
-	typeof define === 'function' && define.amd ? define(['exports'], factory) :
-	(factory((global.d3 = global.d3 || {})));
-}(this, (function (exports) { 'use strict';
-
+// Vendored d3-flextree 2.1.2 (non-layered tidy-tree layout, van der Ploeg),
+// converted from the self-contained UMD dist to a plain ES module. Inlines the
+// d3-hierarchy bits it needs, so it has no runtime dependencies.
 function count(node) {
   var sum = 0,
       children = node.children,
@@ -815,9 +812,4 @@ var updateLows = function updateLows(lowY, index, lastLows) {
   };
 };
 
-exports.flextree = flextree;
-
-Object.defineProperty(exports, '__esModule', { value: true });
-
-})));
-//# sourceMappingURL=d3-flextree.js.map
+export { flextree };

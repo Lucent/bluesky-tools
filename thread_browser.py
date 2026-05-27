@@ -105,7 +105,7 @@ def build_index(posts, repo_did=""):
     so the browser treats them like any other quote target.
       img attached images: list of {"c": blob CID, "a": alt?}
           — the browser builds a cdn.bsky.app image URL from the CID + DID
-      ext {"u": uri, "t": title, "d": description} for external embed cards
+      ext {"u": uri, "t": title, "d": description, "thumb": cid?} for external embed cards
       vid true if the embed is a video
     """
     known_rkeys = {p["rkey"] for p in posts}
@@ -173,6 +173,9 @@ def build_index(posts, repo_did=""):
                 rec = {"c": cid}
                 if img.get("alt"):
                     rec["a"] = img["alt"]
+                ar = img.get("aspectRatio") or {}
+                if ar.get("width") and ar.get("height"):
+                    rec["ar"] = [ar["width"], ar["height"]]   # size the box to the image
                 images.append(rec)
             if images:
                 entry["img"] = images
@@ -188,6 +191,10 @@ def build_index(posts, repo_did=""):
                 card = {"u": uri, "t": ext.get("title", "")}
                 if ext.get("description"):
                     card["d"] = ext["description"]
+                thumb = ext.get("thumb") or {}        # blob ref → CID, for the card image
+                cid = (thumb.get("ref") or {}).get("$link") or thumb.get("cid")
+                if cid:
+                    card["thumb"] = cid
                 entry["ext"] = card
         elif kind == "app.bsky.embed.video":
             entry["vid"] = True
