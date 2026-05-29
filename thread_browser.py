@@ -16,51 +16,12 @@ import urllib.parse
 
 from thread_graph import parent_rkey, quoted_rkeys, read_posts
 
-# A faceted link like https://bsky.app/profile/<actor>/post/<rkey> targets a
-# post, not a web page. The <actor> may be a stale handle, but the rkey still
-# identifies the record, so we match on rkey alone.
-_POST_LINK = re.compile(r"/post/([0-9a-z]+)")
-_X_HOSTS = {"twitter.com", "x.com", "mobile.twitter.com"}
-# Tweet card titles look like:  Display Name on X: "the tweet text"
-_TWEET_TITLE = re.compile(r'^(.*?) on (?:X|Twitter):\s*"?(.*?)"?\s*$', re.S)
-
-
-def link_post_rkey(uri, known_rkeys):
-    """Return the rkey a facet link points at, if it names a post we have."""
-    match = _POST_LINK.search(uri or "")
-    if match and match.group(1) in known_rkeys:
-        return match.group(1)
-    return None
-
-
-def is_x_host(uri):
-    """True if the URI points at Twitter / X."""
-    try:
-        host = urllib.parse.urlparse(uri).netloc.lower()
-    except ValueError:
-        return False
-    return host[4:] in _X_HOSTS if host.startswith("www.") else host in _X_HOSTS
-
-
-def tweet_node(ext, uri):
-    """Build a synthetic graph node for a quoted Twitter/X post, so the browser
-    can treat it as a normal quote target instead of a special case."""
-    title = (ext.get("title") or "").strip()
-    text = (ext.get("description") or "").strip()
-    author = ""
-    match = _TWEET_TITLE.match(title)
-    if match:
-        author = match.group(1).strip()
-        text = text or match.group(2).strip()
-    if not author:
-        handle = re.search(r"(?:twitter\.com|x\.com)/([A-Za-z0-9_]+)", uri)
-        if handle and handle.group(1).lower() not in ("i", "intent", "home"):
-            author = "@" + handle.group(1)
-    text = text or title or (author + " on X" if author else "X post")
-    node = {"tweet": True, "u": uri, "t": text}
-    if author:
-        node["a"] = author
-    return node
+# CDN templates: the build pre-resolves every blob CID into the same URL shape the
+# AppView returns at runtime, so archive entries land in the browser already shaped
+# like API-view posts (no per-load CID→URL fix-up).
+_CDN_FULLSIZE = "https://cdn.bsky.app/img/feed_fullsize/plain/"
+_CDN_THUMBNAIL = "https://cdn.bsky.app/img/feed_thumbnail/plain/"
+_VIDEO_BASE = "https://video.bsky.app/watch/"
 
 
 def read_profile(directory):
@@ -98,19 +59,16 @@ def build_index(posts, repo_did=""):
           of our posts that share an external thread onto a single graph
       xrd thread root author DID, when the root isn't ours (so the root post can
           be fetched too)
-      q   list of quoted rkeys (embed quotes + faceted post-links + tweet nodes)
-      f   raw facets; post-links and tweet-links are stripped
-
-    Quoted tweets become synthetic nodes keyed "x:<rkey>" with {tweet, u, t, a}
-    so the browser treats them like any other quote target.
-      img attached images: list of {"c": blob CID, "a": alt?}
-          — the browser builds a cdn.bsky.app image URL from the CID + DID
-      ext {"u": uri, "t": title, "d": description, "thumb": cid?} for external embed cards
-      vid true if the embed is a video
+      q   list of embed-quoted rkeys; the browser promotes facet post-links and
+          X-host cards to quotes at intake (same rule applied to network posts)
+      f   raw facets, exactly as the record carries them
+      img list of {u: full CDN URL, a?: alt, ar?: [w, h]} — API-view shape
+      ext {u, t, d?, thumb?: full CDN URL} for external embed cards
+      vid {a?, ar?} sibling-by playlist and poster URLs at the entry level
     """
+    video_did = urllib.parse.quote(repo_did, safe="")    # video.bsky.app insists on a percent-encoded DID
     known_rkeys = {p["rkey"] for p in posts}
     index = {}
-    tweet_nodes = {}                       # synthetic "x:<rkey>" nodes for quoted tweets
     for post in posts:
         entry = {
             "t": post.get("text", ""),
@@ -137,25 +95,10 @@ def build_index(posts, repo_did=""):
                         entry["xrd"] = rparts[2]
         quotes = list(quoted_rkeys(post))
 
-        # Walk facets: a link to one of our posts is really a quote; a link to
-        # a tweet is stripped (rendered as plain text); other links are kept.
-        kept_facets = []
-        for facet in post.get("facets") or []:
-            linked = None
-            x_link = False
-            for feat in facet.get("features", []):
-                if feat.get("$type") == "app.bsky.richtext.facet#link":
-                    uri = feat.get("uri", "")
-                    linked = link_post_rkey(uri, known_rkeys)
-                    x_link = x_link or is_x_host(uri)
-            if linked:
-                if linked not in quotes:
-                    quotes.append(linked)
-            elif not x_link:
-                kept_facets.append(facet)
-
-        if kept_facets:
-            entry["f"] = kept_facets
+        # Facets pass through raw — the browser promotes post-link facets to quotes
+        # and strips X-host links at intake, so the rule lives in one place.
+        if post.get("facets"):
+            entry["f"] = post["facets"]
 
         embed = post.get("embed") or {}
         kind = embed.get("$type")
@@ -170,7 +113,7 @@ def build_index(posts, repo_did=""):
                 cid = (((img.get("image") or {}).get("ref") or {}).get("$link"))
                 if not cid:
                     continue
-                rec = {"c": cid}
+                rec = {"u": f"{_CDN_FULLSIZE}{repo_did}/{cid}@jpeg"}
                 if img.get("alt"):
                     rec["a"] = img["alt"]
                 ar = img.get("aspectRatio") or {}
@@ -180,30 +123,37 @@ def build_index(posts, repo_did=""):
             if images:
                 entry["img"] = images
         elif kind == "app.bsky.embed.external":
+            # Always emit the raw card; the browser promotes X-host cards to synthetic
+            # tweet-quote nodes at intake (same rule applied to network posts too).
             ext = media.get("external", {})
-            uri = ext.get("uri", "")
-            if is_x_host(uri):
-                # A quoted tweet becomes a real node the graph can point at.
-                tid = "x:" + post["rkey"]
-                tweet_nodes[tid] = tweet_node(ext, uri)
-                quotes.append(tid)
-            else:
-                card = {"u": uri, "t": ext.get("title", "")}
-                if ext.get("description"):
-                    card["d"] = ext["description"]
-                thumb = ext.get("thumb") or {}        # blob ref → CID, for the card image
-                cid = (thumb.get("ref") or {}).get("$link") or thumb.get("cid")
-                if cid:
-                    card["thumb"] = cid
-                entry["ext"] = card
+            card = {"u": ext.get("uri", ""), "t": ext.get("title", "")}
+            if ext.get("description"):
+                card["d"] = ext["description"]
+            thumb = ext.get("thumb") or {}
+            cid = (thumb.get("ref") or {}).get("$link") or thumb.get("cid")
+            if cid:
+                card["thumb"] = f"{_CDN_THUMBNAIL}{repo_did}/{cid}@jpeg"
+            entry["ext"] = card
         elif kind == "app.bsky.embed.video":
-            entry["vid"] = True
+            cid = (((media.get("video") or {}).get("ref") or {}).get("$link"))
+            rec = {}
+            ar = media.get("aspectRatio") or {}
+            if ar.get("width") and ar.get("height"):
+                rec["ar"] = [ar["width"], ar["height"]]
+            if media.get("alt"):
+                rec["a"] = media["alt"]
+            if cid:
+                base = f"{_VIDEO_BASE}{video_did}/{cid}/"
+                entry["playlist"] = base + "playlist.m3u8"
+                entry["poster"] = base + "thumbnail.jpg"
+                entry["vid"] = rec
+            elif rec:
+                entry["vid"] = rec
 
         if quotes:
             entry["q"] = quotes
 
         index[post["rkey"]] = entry
-    index.update(tweet_nodes)
     return index
 
 
@@ -245,7 +195,7 @@ def main():
 
     index = build_index(posts, repo_did=did)
     meta = read_profile(args.directory)
-    payload = {"did": did, "meta": meta, "posts": index}
+    payload = {"meta": meta, "posts": index}   # the filename encodes the owner DID
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump(payload, fh, separators=(",", ":"), ensure_ascii=False)
     print(f"Wrote {out_path} ({len(index)} entries, {meta.get('name') or '?'})", file=sys.stderr)

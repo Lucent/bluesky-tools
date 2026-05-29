@@ -73,7 +73,7 @@ function isCollapsible(rkey) {
 // ---------- visible subgraph ----------
 // Build the union of every pinned thread. Quotes between two visible posts become
 // connecting edges; quotes to anything outside stay as satellites.
-export function buildVisible(pins) {
+export function buildVisible(pins, focus) {
 	const pinSet = new Set(pins);
 	// An up-collapsed node re-roots its thread at itself (hiding its parent, siblings,
 	// and everything above), so walk from each thread's display root: the pin itself,
@@ -138,6 +138,39 @@ export function buildVisible(pins) {
 			if (!tree.has(q)) addSat(q, n, "in");
 		}
 	}
+	// Re-order display roots by connection along in-tree quote edges, BFS-rooted at the
+	// largest thread (most nodes, rkey tie-break). The layout has no global focus — the
+	// "anchor" thread is just whichever has the most content to preserve; clicked quotes
+	// then tuck adjacent to their bridge partners and the graph expands outward in the
+	// click's direction. Pure function of (pins, quote graph) → hash bijection preserved.
+	if (displayRoots.length > 1) {
+		const rootOf = {};
+		for (const r of displayRoots) (function walk(rk) {
+			if (rootOf[rk]) return;
+			rootOf[rk] = r;
+			for (const c of treeKids[rk]) walk(c);
+		})(r);
+		const sizes = {};
+		for (const r of displayRoots) sizes[r] = 0;
+		for (const k in rootOf) sizes[rootOf[k]]++;
+		const adj = {};
+		for (const r of displayRoots) adj[r] = new Set();
+		for (const {from, to} of quoteEdges) {
+			const a = rootOf[from], b = rootOf[to];
+			if (a && b && a !== b) { adj[a].add(b); adj[b].add(a); }
+		}
+		const start = displayRoots.slice().sort((a, b) => sizes[b] - sizes[a] || (a < b ? -1 : 1))[0];
+		const order = [], seen = new Set([start]);
+		const queue = [start];
+		while (queue.length) {
+			const r = queue.shift(); order.push(r);
+			for (const n of [...adj[r]].sort()) if (!seen.has(n)) { seen.add(n); queue.push(n); }
+		}
+		for (const r of displayRoots) if (!seen.has(r)) order.push(r);   // isolated → rkey order (displayRoots is pre-sorted)
+		displayRoots.length = 0;
+		displayRoots.push(...order);
+	}
+
 	return {tree, quoteEdges, satNodes: Object.values(satNodeMap), satEdges, treeKids, grafts, displayRoots};
 }
 
@@ -176,11 +209,13 @@ export function computeLayout(view, heightOf) {
 		.spacing(() => H_GAP);
 	const toData = (rk) => ({rk, children: treeKids[rk].map(toData)});
 
-	// Contour tuck: rightOf[y-bin] = furthest-right edge of everything placed so far.
-	// A new thread slides right only as far as its own left contour needs to clear
-	// that profile by H_GAP — so it slips into vertical gaps instead of a flat band.
+	// Contour tuck, bidirectional: rightOf / leftOf track the outer edges of everything
+	// placed so far, per y-bin. A new thread tucks to the side its bridge partner sits on
+	// (partner.x ≥ 0 → right of the focus, < 0 → left), then slides only as far as its
+	// own contour needs to clear that side's profile by H_GAP — so it slips into vertical
+	// gaps instead of a flat band, and merged threads spread to both sides of the focus.
 	const BIN = 8;
-	const rightOf = new Map();
+	const rightOf = new Map(), leftOf = new Map();
 	const span = (y, rk) => [y, y + rowH(rk) + V_GAP];
 	const cxy = {};
 	displayRoots.forEach((root, k) => {
@@ -189,35 +224,50 @@ export function computeLayout(view, heightOf) {
 		const local = {};
 		t.each(n => { local[n.data.rk] = {x: n.x, y: n.y}; });
 
-		// vertical: line this subtree's bridge post up with its already-placed partner
-		let dy = 0;
+		// vertical: line this subtree's bridge post up with its already-placed partner,
+		// and use the partner's global x to pick which side to tuck on.
+		let dy = 0, side = "right";
 		if (k > 0) {
 			const link = quoteEdges.find(e =>
 				(local[e.from] && cxy[e.to]) || (local[e.to] && cxy[e.from]));
 			if (link) {
 				const mine = local[link.from] ? link.from : link.to;
-				dy = cxy[mine === link.from ? link.to : link.from].y - local[mine].y;
+				const partner = cxy[mine === link.from ? link.to : link.from];
+				dy = partner.y - local[mine].y;
+				side = partner.x >= 0 ? "right" : "left";
 			}
 		}
 
-		// horizontal: smallest shift that clears the placed contour where they overlap
+		// horizontal: smallest shift on the chosen side that clears the placed contour
 		let dx = 0;
 		if (k > 0) {
-			dx = -Infinity;
-			for (const rk in local) {
-				const [lo, hi] = span(local[rk].y + dy, rk), left = local[rk].x - allocW(rk) / 2;
-				for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++)
-					if (rightOf.has(b)) dx = Math.max(dx, rightOf.get(b) + H_GAP - left);
+			if (side === "right") {
+				dx = -Infinity;
+				for (const rk in local) {
+					const [lo, hi] = span(local[rk].y + dy, rk), left = local[rk].x - allocW(rk) / 2;
+					for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++)
+						if (rightOf.has(b)) dx = Math.max(dx, rightOf.get(b) + H_GAP - left);
+				}
+				if (dx === -Infinity) dx = 0;
+			} else {
+				dx = Infinity;
+				for (const rk in local) {
+					const [lo, hi] = span(local[rk].y + dy, rk), right = local[rk].x + allocW(rk) / 2;
+					for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++)
+						if (leftOf.has(b)) dx = Math.min(dx, leftOf.get(b) - H_GAP - right);
+				}
+				if (dx === Infinity) dx = 0;
 			}
-			if (dx === -Infinity) dx = 0;   // no vertical overlap with anything placed
 		}
 
 		for (const rk in local) {
 			const x = local[rk].x + dx, y = local[rk].y + dy;
 			cxy[rk] = {x, y};
-			const [lo, hi] = span(y, rk), right = x + allocW(rk) / 2;
-			for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++)
+			const [lo, hi] = span(y, rk), left = x - allocW(rk) / 2, right = x + allocW(rk) / 2;
+			for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++) {
 				rightOf.set(b, Math.max(rightOf.get(b) ?? -Infinity, right));
+				leftOf.set(b, Math.min(leftOf.get(b) ?? Infinity, left));
+			}
 		}
 	});
 
