@@ -1,0 +1,3 @@
+[submodule "flexforest"]
+	path = flexforest
+	url = git@github.com:Lucent/flexforest.git

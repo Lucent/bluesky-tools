@@ -1,0 +1,11 @@
+.git/
+__pycache__/
+*.pyc
+.env
+node_modules/
+index.json
+test_layout.mjs
+diag_layout.mjs
+LAYOUT.md
+README.md
+*.txt

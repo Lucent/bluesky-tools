@@ -1,11 +1,11 @@
 // Pure layout engine for the thread browser: build the visible subgraph from the
 // pinned threads, and pack the threads into a tidy forest with flextree. No DOM and
-// no text metrics — node *heights* are measured by the browser (posts are HTML cards
+// no text metrics -- node *heights* are measured by the browser (posts are HTML cards
 // now) and handed in. The data model is handed in by reference (initLayout). render()
 // measures, calls computeLayout, and draws; everything here stays testable under Node.
-import { flextree } from "./flextree.js";
+import { packForest } from "./flexforest/flexforest.js";
 
-// The live data model — the same object references the page builds and mutates.
+// The live data model -- the same object references the page builds and mutates.
 let INDEX, children, quotedBy, COLLAPSED, UPCOLLAPSED;
 export function initLayout(model) {
 	({INDEX, children, quotedBy, COLLAPSED, UPCOLLAPSED} = model);
@@ -15,6 +15,9 @@ export function initLayout(model) {
 // that separate posts, threads, and satellite quote stacks.
 export const NODE_W = 240;
 const H_GAP = 26, V_GAP = 46, SAT_GAP = 34, SAT_VGAP = 14;
+// The page hands these to the flexforest view as its packer config (the library has no
+// hardcoded dimensions); computeLayout's adapter uses them too.
+export const GAPS = {hGap: H_GAP, vGap: V_GAP, sideGap: SAT_GAP, sideVGap: SAT_VGAP};
 
 // ---------- graph queries ----------
 export function localRoot(rkey) {
@@ -39,7 +42,7 @@ export function isAncestor(a, b) {
 	return false;
 }
 
-// An empty reply to someone else's post is noise — skip it. The exception is
+// An empty reply to someone else's post is noise -- skip it. The exception is
 // the trick of replying to an outside post with only a quote of one of our own
 // posts, which we keep because it connects that post into our own tree.
 export function isNoise(rkey) {
@@ -59,14 +62,14 @@ export function descendantCount(rkey, seen) {
 }
 
 // A textless leaf reply to one of our own posts whose only payload is a quote
-// is just a connector — we collapse the empty box and hang its quote straight
+// is just a connector -- we collapse the empty box and hang its quote straight
 // off the parent (drawn with a double border to flag the shortcut).
 function isCollapsible(rkey) {
 	const e = INDEX[rkey];
 	if ((e.t || "").trim()) return false;           // has its own words
 	if (!e.p || !INDEX[e.p]) return false;          // must reply to one of our posts
 	if (e.img || e.vid || e.ext) return false;      // carries other content
-	if (children[rkey].length) return false;        // has replies — would orphan them
+	if (children[rkey].length) return false;        // has replies -- would orphan them
 	return e.q && e.q.some(q => INDEX[q]);
 }
 
@@ -77,7 +80,7 @@ export function buildVisible(pins, focus) {
 	const pinSet = new Set(pins);
 	// An up-collapsed node re-roots its thread at itself (hiding its parent, siblings,
 	// and everything above), so walk from each thread's display root: the pin itself,
-	// unless it holds up-collapses — then from the deepest ones (a shallower up-collapse
+	// unless it holds up-collapses -- then from the deepest ones (a shallower up-collapse
 	// is hidden by a deeper one below it).
 	const displayRoots = [];
 	for (const root of pins) {
@@ -95,19 +98,19 @@ export function buildVisible(pins, focus) {
 	})(root);
 
 	// Collapse blank quote-only leaf replies to our own posts: drop the empty box
-	// and graft the quoted post into its slot AS A REPLY (it really is one) — a
+	// and graft the quoted post into its slot AS A REPLY (it really is one) -- a
 	// child via a solid edge, drawn with a double border to flag the shortcut.
 	const collapsed = [];
 	for (const rk of tree) if (!pinSet.has(rk) && isCollapsible(rk)) collapsed.push(rk);
 	for (const rk of collapsed) tree.delete(rk);
 
-	const grafts = new Set();                       // grafted nodes — drawn double-boxed
+	const grafts = new Set();                       // grafted nodes -- drawn double-boxed
 	const treeKids = {};                            // per-view child lists (replies + grafts)
 	for (const rk of tree) treeKids[rk] = children[rk].filter(c => tree.has(c));
 
 	const quoteEdges = [];   // {from, to}  meaning "from quotes to"
 	// An off-tree quote post is one box (satNodeMap) but every link to it gets its
-	// own edge (satEdges) — so a post quoted by several visible posts shows once
+	// own edge (satEdges) -- so a post quoted by several visible posts shows once
 	// with several arrows pointing in.
 	const satNodeMap = {};   // rkey -> {rkey, anchor, dir}  (placement + badge)
 	const satEdges = [];     // {anchor, sat, dir}           (one per quote link)
@@ -121,7 +124,7 @@ export function buildVisible(pins, focus) {
 		if (!tree.has(anchor)) continue;
 		for (const q of INDEX[c].q || []) {
 			if (!INDEX[q]) continue;
-			if (tree.has(q)) quoteEdges.push({from: anchor, to: q});   // target already shown → just link
+			if (tree.has(q)) quoteEdges.push({from: anchor, to: q});   // target already shown -> just link
 			else { tree.add(q); treeKids[q] = []; treeKids[anchor].push(q); grafts.add(q); }
 		}
 	}
@@ -139,10 +142,10 @@ export function buildVisible(pins, focus) {
 		}
 	}
 	// Re-order display roots by connection along in-tree quote edges, BFS-rooted at the
-	// largest thread (most nodes, rkey tie-break). The layout has no global focus — the
+	// largest thread (most nodes, rkey tie-break). The layout has no global focus -- the
 	// "anchor" thread is just whichever has the most content to preserve; clicked quotes
 	// then tuck adjacent to their bridge partners and the graph expands outward in the
-	// click's direction. Pure function of (pins, quote graph) → hash bijection preserved.
+	// click's direction. Pure function of (pins, quote graph) -> hash bijection preserved.
 	if (displayRoots.length > 1) {
 		const rootOf = {};
 		for (const r of displayRoots) (function walk(rk) {
@@ -166,7 +169,7 @@ export function buildVisible(pins, focus) {
 			const r = queue.shift(); order.push(r);
 			for (const n of [...adj[r]].sort()) if (!seen.has(n)) { seen.add(n); queue.push(n); }
 		}
-		for (const r of displayRoots) if (!seen.has(r)) order.push(r);   // isolated → rkey order (displayRoots is pre-sorted)
+		for (const r of displayRoots) if (!seen.has(r)) order.push(r);   // isolated -> rkey order (displayRoots is pre-sorted)
 		displayRoots.length = 0;
 		displayRoots.push(...order);
 	}
@@ -175,129 +178,25 @@ export function buildVisible(pins, focus) {
 }
 
 // ---------- forest packing ----------
-// Pack a built view into geometry. heightOf(rk) gives a post's measured pixel height
-// (the page measures the HTML card; tests pass a synthetic function). Returns box
-// top-left positions (pos), satellite positions (satPos), and the bounding box. Pure
-// and deterministic given the model + heights.
+// Pack a built view into geometry by handing it to flexforest, the app-agnostic packer.
+// This is the one seam between thread vocabulary and the library: quote satellites become
+// left/right "sidecars" (incoming quotes left, outgoing right), in-tree quote edges become
+// generic cross-links (used for bridge alignment), and the page's post gaps become the
+// packer's config. heightOf(rk) gives a post's measured pixel height (the page measures the
+// HTML card; tests pass a synthetic function). Pure and deterministic given the model +
+// heights. The result keeps the page's names (tree/treeKids/satNodes/satPos/...) so render()
+// and the test are unchanged -- only the math moved out.
 export function computeLayout(view, heightOf) {
 	const {tree, quoteEdges, satNodes, satEdges, treeKids, grafts, displayRoots} = view;
-	const H = heightOf;
-
-	// Quote satellites split by direction so a post can use both gutters: incoming
-	// quotes (posts that quote this one) stack to its left, outgoing quotes (posts
-	// or tweets this one quotes) to its right. A gutter is reserved per populated side.
-	const satsIn = {}, satsOut = {};
-	for (const s of satNodes) {
-		const m = s.dir === "in" ? satsIn : satsOut;
-		(m[s.anchor] || (m[s.anchor] = [])).push(s);
-	}
-	const stackH = (list) => list && list.length ? list.reduce((a, s) => a + H(s.rkey), 0) + SAT_VGAP * (list.length - 1) : 0;
-	const gutterW = (list) => list && list.length ? SAT_GAP + NODE_W : 0;
-	const leftG = (rk) => gutterW(satsIn[rk]);
-	const allocW = (rk) => leftG(rk) + NODE_W + gutterW(satsOut[rk]);
-	const rowH = (rk) => Math.max(H(rk), stackH(satsIn[rk]), stackH(satsOut[rk]));
-
-	// Lay each pinned thread as its OWN upright tidy tree — parents above, replies
-	// below, packed by contour (flextree). Threads are then set side-by-side: a merged
-	// thread is woven in *beside* the one it quotes (never re-rooted), shifted
-	// vertically so the quote arrow runs straight across between the two linked posts,
-	// and tucked horizontally by contour so a short thread nestles into a tall
-	// neighbour's empty space. Each thread keeps its natural orientation, spanning up
-	// (its ancestors) and down (its replies) on its own.
-	const fl = flextree()
-		.nodeSize(d => [allocW(d.data.rk), rowH(d.data.rk) + V_GAP])
-		.spacing(() => H_GAP);
-	const toData = (rk) => ({rk, children: treeKids[rk].map(toData)});
-
-	// Contour tuck, bidirectional: rightOf / leftOf track the outer edges of everything
-	// placed so far, per y-bin. A new thread tucks to the side its bridge partner sits on
-	// (partner.x ≥ 0 → right of the focus, < 0 → left), then slides only as far as its
-	// own contour needs to clear that side's profile by H_GAP — so it slips into vertical
-	// gaps instead of a flat band, and merged threads spread to both sides of the focus.
-	const BIN = 8;
-	const rightOf = new Map(), leftOf = new Map();
-	const span = (y, rk) => [y, y + rowH(rk) + V_GAP];
-	const cxy = {};
-	displayRoots.forEach((root, k) => {
-		const t = fl.hierarchy(toData(root));
-		fl(t);
-		const local = {};
-		t.each(n => { local[n.data.rk] = {x: n.x, y: n.y}; });
-
-		// vertical: line this subtree's bridge post up with its already-placed partner,
-		// and use the partner's global x to pick which side to tuck on.
-		let dy = 0, side = "right";
-		if (k > 0) {
-			const link = quoteEdges.find(e =>
-				(local[e.from] && cxy[e.to]) || (local[e.to] && cxy[e.from]));
-			if (link) {
-				const mine = local[link.from] ? link.from : link.to;
-				const partner = cxy[mine === link.from ? link.to : link.from];
-				dy = partner.y - local[mine].y;
-				side = partner.x >= 0 ? "right" : "left";
-			}
-		}
-
-		// horizontal: smallest shift on the chosen side that clears the placed contour
-		let dx = 0;
-		if (k > 0) {
-			if (side === "right") {
-				dx = -Infinity;
-				for (const rk in local) {
-					const [lo, hi] = span(local[rk].y + dy, rk), left = local[rk].x - allocW(rk) / 2;
-					for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++)
-						if (rightOf.has(b)) dx = Math.max(dx, rightOf.get(b) + H_GAP - left);
-				}
-				if (dx === -Infinity) dx = 0;
-			} else {
-				dx = Infinity;
-				for (const rk in local) {
-					const [lo, hi] = span(local[rk].y + dy, rk), right = local[rk].x + allocW(rk) / 2;
-					for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++)
-						if (leftOf.has(b)) dx = Math.min(dx, leftOf.get(b) - H_GAP - right);
-				}
-				if (dx === Infinity) dx = 0;
-			}
-		}
-
-		for (const rk in local) {
-			const x = local[rk].x + dx, y = local[rk].y + dy;
-			cxy[rk] = {x, y};
-			const [lo, hi] = span(y, rk), left = x - allocW(rk) / 2, right = x + allocW(rk) / 2;
-			for (let b = Math.floor(lo / BIN); b <= Math.ceil(hi / BIN); b++) {
-				rightOf.set(b, Math.max(rightOf.get(b) ?? -Infinity, right));
-				leftOf.set(b, Math.min(leftOf.get(b) ?? Infinity, left));
-			}
-		}
-	});
-
-	// Convert centres → top-left boxes; drop each satellite stack into its gutter,
-	// vertically centred on the post (incoming left, outgoing right).
-	const pos = {}, satPos = {};
-	const stackInto = (list, x, cy) => {
-		if (!list) return;
-		let y = cy - stackH(list) / 2;
-		for (const s of list) { satPos[s.rkey] = {x, y}; y += H(s.rkey) + SAT_VGAP; }
+	const desc = {
+		nodes: tree,
+		children: treeKids,
+		roots: displayRoots,
+		crossEdges: quoteEdges,
+		sidecars: satNodes.map(s => ({key: s.rkey, anchor: s.anchor, side: s.dir === "in" ? "left" : "right"})),
 	};
-	for (const rk of tree) {
-		const c = cxy[rk], boxLeft = c.x - allocW(rk) / 2, postLeft = boxLeft + leftG(rk);
-		const mid = c.y + (rowH(rk) + V_GAP) / 2;                  // flextree's y is the box top; centre content in the row
-		pos[rk] = {x: postLeft, y: mid - H(rk) / 2};
-		stackInto(satsIn[rk], boxLeft, mid);                       // left gutter
-		stackInto(satsOut[rk], postLeft + NODE_W + SAT_GAP, mid);  // right gutter
-	}
-
-	// Bounding box over every placed box (tree + satellites, which may sit left or below).
-	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-	for (const rk of tree) {
-		minX = Math.min(minX, pos[rk].x); minY = Math.min(minY, pos[rk].y);
-		maxX = Math.max(maxX, pos[rk].x + NODE_W); maxY = Math.max(maxY, pos[rk].y + H(rk));
-	}
-	for (const s of satNodes) {
-		const p = satPos[s.rkey];
-		minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
-		maxX = Math.max(maxX, p.x + NODE_W); maxY = Math.max(maxY, p.y + H(s.rkey));
-	}
-
-	return {tree, treeKids, grafts, quoteEdges, satNodes, satEdges, pos, satPos, bounds: [minX, minY, maxX, maxY]};
+	const config = {nodeW: NODE_W, ...GAPS};
+	const {pos, sidecarPos, bounds} = packForest(desc, heightOf, config);
+	// sidecar keys are the satellite rkeys, so sidecarPos is satPos under the page's name.
+	return {tree, treeKids, grafts, quoteEdges, satNodes, satEdges, pos, satPos: sidecarPos, bounds};
 }

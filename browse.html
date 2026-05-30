@@ -12,6 +12,10 @@
 	// saved choice we leave color-scheme:light dark (set in CSS), which follows the OS.
 	{ const t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.style.colorScheme = t; }
 </script>
+<!-- flexforest default stylesheet: the view's motion + structure (transitions, enter/leave,
+     fold-tag cursor, camera surface). Linked first so the rules below can override colours
+     and retune the --ff-* timing custom properties. -->
+<link rel="stylesheet" href="flexforest/flexforest.css">
 <style>
 	:root {
 		color-scheme: light dark;
@@ -98,10 +102,10 @@
 	aside mark { background: color-mix(in srgb, var(--hit) 30%, transparent); color: inherit; border-radius: 2px; }
 
 	#view { position: relative; min-width: 0; min-height: 0; }
-	#graph { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; background:
+	/* cursor + touch-action live in flexforest.css (.ff-graph), added to the svg by the view. */
+	#graph { width: 100%; height: 100%; display: block; background:
 		repeating-linear-gradient(0deg,var(--faint) 0 1px,transparent 1px 26px),
 		repeating-linear-gradient(90deg,var(--faint) 0 1px,transparent 1px 26px), var(--paper); }
-	#graph.grabbing { cursor: grabbing; }
 
 	/* `> rect` targets only the post's own box (a direct child), not the rects nested
 	   inside cards or toggles — so a quote/tweet box border doesn't bleed into them. */
@@ -172,18 +176,16 @@
 		cursor: pointer; color: inherit; transition: color .15s; }
 	.post .copy:hover { color: LinkText; }
 	.post .copy svg { display: block; width: 100%; height: 100%; }
-	.ctoggle { cursor: pointer; }
+	/* .ctoggle cursor lives in flexforest.css; colours stay here. */
 	.ctoggle .ctbg { fill: Canvas; stroke: var(--edge); stroke-width: 1.2; }
 	.ctoggle:hover .ctbg { stroke: AccentColor; }
 	.ctoggle .ctlbl { fill: GrayText; font-size: 11px; }
 	/* the canvas shows a grab cursor; stop it at the node so content is default and
-	   links/satellites pick their own (handled above). */
-	.node { cursor: auto; transition: transform .3s ease, opacity .25s ease; }
-	/* Staggered add/remove: a node enters/leaves at opacity 0; survivors glide via the
-	   transform transition above when their position shifts between renders. */
-	.node.enter, .node.leave { opacity: 0; }
+	   links/satellites pick their own (handled above). Motion — the transform/opacity
+	   transitions and the .enter/.leave resting state — lives in flexforest.css. */
+	.node { cursor: auto; }
 
-	.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; transition: d .3s ease, opacity .25s ease; }
+	.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; }
 	.edge.quoteedge { stroke: var(--quote); stroke-dasharray: 5 4; marker-end: url(#qarrow); }
 	.edge.graft { stroke: var(--quote); }
 
@@ -262,7 +264,6 @@
 					<path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
 				</symbol>
 			</defs>
-			<g id="scene"></g>
 		</svg>
 		<button id="fit" class="ctrl" title="Fit to view" aria-label="Fit to view">
 			<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -284,9 +285,9 @@
 // so the DOM is already parsed when this runs.
 // Pure, DOM-free layout engine (visible-subgraph build, text wrap, flextree forest).
 // We hand it the data model by reference; it hands back geometry. render() draws it.
-import { initLayout, buildVisible, computeLayout, localRoot, isLocalRoot, isAncestor, isNoise, descendantCount,
-	NODE_W } from "./layout.js";
-const SVGNS = "http://www.w3.org/2000/svg";
+import { initLayout, buildVisible, localRoot, isLocalRoot, isAncestor, isNoise, descendantCount,
+	NODE_W, GAPS } from "./layout.js";
+import { FlexForest } from "./flexforest/flexforest-view.js";
 // index entries are compact: { t:text, d:createdAt, p:parentRkey?, q:[quoted]?,
 //   f:facets?, alt:[strings]?, ext:{u,t,d}?, img:n?, vid:true?, xp:parentDid? }
 // xp/xr/xrd are set when a reply targets someone else's post (the parent isn't
@@ -305,14 +306,12 @@ const ARCHIVE_HREF = document.querySelector('link[rel="archive"]').getAttribute(
 const ARCHIVE_DID = "did:plc:" + ARCHIVE_HREF.slice(0, -5);
 let DID = ARCHIVE_DID;
 let PINS = [];         // pinned thread roots shown together (ctrl+click merges threads)
-// Cache of the last full render so a click within the same pinned set can just
-// move the highlight + pan, instead of re-laying-out and re-fitting the view.
-let lastPinsKey = null, lastPos = null, lastH = null, lastBounds = null;
+// lastPinsKey gates the fast path: a click within the same pinned set skips relayout —
+// view.refresh() recomputes the selection classes, view.panIntoView() pans. The forest
+// view owns the rest of the render cache (positions, bounds, camera, the node/edge DOM).
+let lastPinsKey = null;
 let lastShown = null;  // hash we last restored, to dedupe popstate/hashchange/our own writes
-// Persistent SVG layers + the live node <g> map, so renders reconcile (keep/move/fade)
-// instead of rebuilding — that's what lets survivors glide and adds/removes stagger.
-let edgeLayer = null, nodeLayer = null, nodeEls = {}, edgeItems = [], staggerTimer = null;
-const CAM_MS = 1000;        // camera ease duration; long enough to glide continuously as the stagger keeps retargeting it
+let currentView = null;   // last built view + per-key render metadata, read by renderNode
 const children = {};   // rkey -> [child rkeys]   (local replies)
 const quotedBy = {};   // rkey -> [quoting rkeys] (local quotes pointing in)
 const COLLAPSED = new Set();   // rkeys whose reply subtree the user has folded shut (downward)
@@ -327,30 +326,20 @@ let FOCUS = null;
 const $ = (s) => document.querySelector(s);
 const setStatus = (m) => { $("#status").textContent = m; };
 const svg = $("#graph");
-const scene = $("#scene");
 
-// ---- view transform (pan / zoom) ----
-let tx = 0, ty = 0, scale = 1;
-let userMoved = false;   // true once the user pans/zooms; cleared on every fitView so the next auto-fit is gated on whether they've adjusted the view since
-function applyTransform() {
-	scene.setAttribute("transform", `translate(${tx},${ty}) scale(${scale})`);
-}
-
-// Ease the camera to a target transform (ease-out cubic). Cancelled the moment the
-// user grabs the canvas (see pointerdown/wheel), so it never fights manual input.
-let camAnim = null;
-function stopCam() { if (camAnim) { cancelAnimationFrame(camAnim); camAnim = null; } }
-function animateTo(nx, ny, ns, ms = 320) {
-	stopCam();
-	const x0 = tx, y0 = ty, s0 = scale, t0 = performance.now();
-	const step = (now) => {
-		const e = 1 - (1 - Math.min(1, (now - t0) / ms)) ** 3;
-		tx = x0 + (nx - x0) * e; ty = y0 + (ny - y0) * e; scale = s0 + (ns - s0) * e;
-		applyTransform();
-		camAnim = e < 1 ? requestAnimationFrame(step) : null;
-	};
-	camAnim = requestAnimationFrame(step);
-}
+// The forest view owns the scene DOM, measurement, packing, the reconcile, the two motion
+// timelines (one-shot reflow + rippled presence), the camera, and pointer interaction — all
+// formerly inline here. We hand it a forest description plus, per key, finished card content
+// and a class string; it draws and animates. renderNode / edgeClass / onActivate / onFold
+// (hoisted, defined below) are the only place thread vocabulary meets the library.
+// Layout mode: layered (depth = aligned rows, top-anchored, clade-style) vs variable-height
+// (each reply a gap below its parent's actual bottom, thread-style). Temporarily ON to view
+// the thread data layered; flip to false to return to thread mode.
+const LAYERED = false;
+const view = new FlexForest(svg, {
+	config: {nodeW: NODE_W, ...GAPS, layered: LAYERED},
+	renderNode, nodeClass, edgeClass, onActivate, onFold,
+});
 
 // ---------- data loading ----------
 // True when the entry URL names only network posts (each a "did/rkey" token, or a pasted
@@ -664,135 +653,90 @@ const fmtCount = (n) => !n ? ""
 	: n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "k"
 	: String(n);
 
-// One offscreen card we reuse to measure a post's pixel height before packing.
-const measurer = el2div();
-function el2div() { const d = document.createElement("div"); d.className = "post measure"; document.body.appendChild(d); return d; }
-// A post's content is immutable once it's in INDEX, so its measured height never changes.
-// Cache by post+badge to skip the forced reflow per visible post on every render.
-const HCACHE = {};
-const measureHeight = (rkey, badge) => {
-	const key = `${rkey} ${badge}`;
-	if (key in HCACHE) return HCACHE[key];
-	measurer.innerHTML = postHTML(rkey, badge);
-	return HCACHE[key] = measurer.offsetHeight;
-};
-
-// ---------- SVG drawing ----------
-function el(tag, attrs, parent) {
-	const n = document.createElementNS(SVGNS, tag);
-	for (const k in attrs) n.setAttribute(k, attrs[k]);
-	if (parent) parent.appendChild(n);
-	return n;
-}
+// Measurement and SVG node/edge drawing moved into flexforest-view; the page only supplies
+// each card's finished content (postHTML) and a class string via renderNode.
 
 // Who wrote a post: a fetched post carries its author DID; an archive post is the
 // account whose repo we loaded (DID). Used to colour posts by author, not by account.
 const authorDid = (rk) => INDEX[rk] && INDEX[rk].did;
 
-// A node's <g> persists across renders (so survivors can glide and add/remove can
-// stagger), so creation (the click handler, once) is split from fill (innards + class,
-// every render). Position is set by the caller via the CSS transform that animates.
-function makeNode(rkey) {
-	const e = INDEX[rkey];
-	const g = el("g", {"data-rkey": rkey});
-	g.addEventListener("click", (ev) => {
-		if (didDrag) return;
-		const copy = ev.target.closest(".copy");
-		if (copy) { ev.stopPropagation(); navigator.clipboard.writeText(copy.dataset.copy); return; }
-		if (ev.target.closest("a")) return;                    // a real link inside the card — let it navigate
-		ev.stopPropagation();
-		if (e.tweet) return;                                   // a tweet only links out (name/chip); the node itself does nothing
-		if (ev.ctrlKey || ev.metaKey || ev.shiftKey) toggleThread(rkey);   // merge / un-merge this post's thread
-		else navigate(rkey);
-	});
-	return g;
+// ---------- app <-> library callbacks ----------
+// The only place post/quote/thread vocabulary meets flexforest-view. They read currentView
+// (set by render) plus the live model and FOCUS/PINS/search — no DOM, no geometry.
+
+// A node's class string from its kind + the current selection/search state. The library
+// prepends "node " and recomputes this on every render and on view.refresh() — so the old
+// markFocal/markSearchHits/setFocusNode passes are gone; the cascade reads these classes.
+function nodeClass(rk) {
+	const e = INDEX[rk], m = currentView.meta[rk];
+	let cls;
+	if (m.sidecar) {
+		const rel = e.tweet ? "" : (m.dir === "out" ? " qout" : " qin");
+		cls = "quote" + rel + (e.tweet ? " tweet" : "");
+	} else {
+		cls = e.tweet ? "tweet" : "au";                                       // every authored tree post is tinted
+		if (rk === FOCUS) cls += " focus";
+		if (PINS.length > 1 && PINS.includes(rk)) cls += " root";
+		if (!e.tweet && authorDid(rk) === authorDid(FOCUS)) cls += " focal";  // whiten the focused author's posts
+	}
+	const q = $("#q").value.trim().toLowerCase();
+	if (q && searchText(e).includes(q)) cls += " hit";
+	return cls;
 }
 
-function fillNode(g, rkey, h, cls, badge, dbl) {
-	const e = INDEX[rkey];
-	// Authored posts get .au (tint); markFocal adds .focal to those by the focused author.
-	const authored = !e.tweet && !(cls || "").includes("quote");
-	g.setAttribute("class", "node " + (cls || "") + (e.tweet ? " tweet" : authored ? " au" : ""));
-	g.replaceChildren();                                                                // wipe innards (keeps the click handler on g)
-	el("rect", {width: NODE_W, height: h, rx: 6}, g);                                   // box: border + fill (+ variants)
-	if (dbl) el("rect", {x: 3, y: 3, width: NODE_W - 6, height: h - 6, rx: 4, class: "dbl"}, g);
-	// the whole post is one HTML card; the browser wraps the text and lays out the media
-	const fo = el("foreignObject", {x: 0, y: 0, width: NODE_W, height: h}, g);
-	const art = document.createElement("div");
-	art.className = "post";
-	art.innerHTML = postHTML(rkey, badge);
-	fo.appendChild(art);
+// Everything the view needs to draw + measure one node: finished card content, its wrapper
+// class (so the measurer styles it identically), the node class, a content cache key, the
+// double-box flag (a grafted quote-reply shortcut), and the fold-tag labels.
+function renderNode(rk) {
+	const e = INDEX[rk], m = currentView.meta[rk];
+	let downFold, upFold;
+	if (!m.sidecar && !m.graft) {
+		if (children[rk].length) downFold = COLLAPSED.has(rk) ? String(descendantCount(rk)) : "–";
+		if (e.p && INDEX[e.p]) upFold = UPCOLLAPSED.has(rk) ? String(descendantCount(localRoot(rk)) - descendantCount(rk)) : "–";
+	}
+	return {content: postHTML(rk, m.badge), wrapClass: "post", className: nodeClass(rk),
+		contentKey: `${rk} ${m.badge}`, dbl: m.graft, downFold, upFold};
 }
 
-// The fold tag: a flat body that holds the count, with a chevron pointing the way the
-// fold eats the tree — down = the subtree below is hidden, up = the ancestors above are.
-// (w widens with the digit count.) Rounded on the flat side, pointed on the fold side.
-function toggleShape(parent, w, down) {
-	const r = 5, tail = 4, T = -8.5, B = 8.5, L = -w / 2, R = w / 2;
-	const d = down
-		? `M ${L + r} ${T} H ${R - r} Q ${R} ${T} ${R} ${T + r} V ${B} L 0 ${B + tail} L ${L} ${B} V ${T + r} Q ${L} ${T} ${L + r} ${T} Z`
-		: `M ${L + r} ${B} H ${R - r} Q ${R} ${B} ${R} ${B - r} V ${T} L 0 ${T - tail} L ${L} ${T} V ${B - r} Q ${L} ${B} ${L + r} ${B} Z`;
-	return el("path", {d, class: "ctbg"}, parent);
+// Edge class by kind: a structural edge into a grafted quote-reply is solid amber; quote
+// cross-links and sidecar links are dashed amber with an arrowhead; replies are plain.
+function edgeClass({to, kind}) {
+	return kind === "child" ? (currentView.meta[to] && currentView.meta[to].graft ? "edge graft" : "edge")
+		: "edge quoteedge";
 }
 
-// Collapse/expand toggle at the bottom-centre of a node with children — right
-// where the reply edges fan out. "–" when open, "+<hidden descendants>" when
-// folded; clicking flips it and relayouts (PINS is unchanged, so drop the fast-path).
-function addCollapseToggle(g, rk, h) {
-	const txt = COLLAPSED.has(rk) ? String(descendantCount(rk)) : "–";   // open shows "–"; folded shows the hidden count
-	const w = Math.max(17, txt.length * 7 + 10);                          // narrow for "–"/one digit, widen for bigger counts
-	const t = el("g", {class: "ctoggle", transform: `translate(${NODE_W / 2}, ${h})`}, g);
-	toggleShape(t, w, true);                                              // points down: the subtree below is folded away
-	const lbl = el("text", {class: "ctlbl", "text-anchor": "middle", y: 3.5}, t);
-	lbl.textContent = txt;
-	t.addEventListener("click", (ev) => {
-		ev.stopPropagation();
-		const apply = () => {
-			COLLAPSED.has(rk) ? COLLAPSED.delete(rk) : COLLAPSED.add(rk);
-			pruneCollapsed();                       // a new fold may subsume folds beneath it
-			writeState(false);                      // the fold is part of the view — record it in the hash
-			lastPinsKey = null;
-			render(FOCUS, rk);                      // anchor + wave radiate from the toggled node, not the unchanged focus
-			if (lastBounds && !userMoved) fitView(...lastBounds, true, 300);
-		};
-		// Closing: fade everything that won't survive — tree descendants and the satellites
-		// they were anchoring — THEN reflow. The render that follows reconciles a clean
-		// survivor set (finalizeAnim drops the .leave nodes), so survivors glide and edges
-		// rebuild together. Diff the post-collapse view against current nodeEls to know who
-		// leaves; tree descendants AND now-orphaned quote satellites both fall out together.
-		if (!COLLAPSED.has(rk)) {
-			COLLAPSED.add(rk);
-			const future = buildVisible(PINS, FOCUS);
-			COLLAPSED.delete(rk);
-			const survives = new Set([...future.tree, ...future.satNodes.map(s => s.rkey)]);
-			const leavers = Object.keys(nodeEls).filter(k => !survives.has(k));
-			const dur = leaveWave(leavers, rk);
-			setTimeout(apply, dur + 250);           // wave + opacity fade tail
-		} else apply();
-	});
+// A node was tapped (ev is {longPress:true} from a touch hold). The copy button and in-card
+// links act on their own; a tweet only links out; a modified tap merges/un-merges the thread.
+function onActivate(rk, ev) {
+	if (ev.longPress) { toggleThread(rk); return; }                    // touch equivalent of ctrl/shift-click
+	const copy = ev.target.closest(".copy");
+	if (copy) { ev.stopPropagation(); navigator.clipboard.writeText(copy.dataset.copy); return; }
+	if (ev.target.closest("a")) return;                                // a real link inside the card — let it navigate
+	ev.stopPropagation();
+	if (INDEX[rk].tweet) return;                                       // a tweet only links out; the node itself does nothing
+	if (ev.ctrlKey || ev.metaKey || ev.shiftKey) toggleThread(rk);     // merge / un-merge this post's thread
+	else navigate(rk);
 }
 
-// Mirror of addCollapseToggle, at the TOP of a post on its incoming reply edge.
-// "–" folds the thread upward (hiding parent, siblings and everything above, re-rooting
-// here); "+<hidden>" restores them.
-function addUpToggle(g, rk) {
-	const up = UPCOLLAPSED.has(rk);
-	const txt = up ? String(descendantCount(localRoot(rk)) - descendantCount(rk)) : "–";
-	const w = Math.max(17, txt.length * 7 + 10);
-	const t = el("g", {class: "ctoggle", transform: `translate(${NODE_W / 2}, 0)`}, g);
-	toggleShape(t, w, false);                                            // points up: everything above is folded away
-	const lbl = el("text", {class: "ctlbl", "text-anchor": "middle", y: 3.5}, t);
-	lbl.textContent = txt;
-	t.addEventListener("click", (ev) => {
-		ev.stopPropagation();
+// A fold tag was clicked. Down folds the reply subtree (fade it out, THEN close the gap —
+// collapseFirst); up re-roots the thread here, hiding parent, siblings, and everything above.
+function onFold(rk, dir) {
+	if (dir === "down") {
+		const folding = !COLLAPSED.has(rk);
+		folding ? COLLAPSED.add(rk) : COLLAPSED.delete(rk);
+		pruneCollapsed();                       // a new fold may subsume folds beneath it
+		writeState(false);                      // the fold is part of the view — record it in the hash
+		lastPinsKey = null;
+		render(FOCUS, rk, folding);             // wave radiates from the toggled node; fade-then-reflow when folding shut
+	} else {
+		const up = UPCOLLAPSED.has(rk);
 		up ? UPCOLLAPSED.delete(rk) : UPCOLLAPSED.add(rk);
-		// re-rooting here hides the focus if it sat above rk → pull focus down to rk
-		if (!up && !isAncestor(rk, FOCUS) && FOCUS !== rk) FOCUS = rk;
+		if (!up && !isAncestor(rk, FOCUS) && FOCUS !== rk) FOCUS = rk;   // re-rooting hid the focus → pull it down to rk
 		pruneCollapsed();
 		writeState(false);
 		lastPinsKey = null;
-		render(FOCUS, rk);                          // anchor on the clicked ancestor so it stays put as ancestors hide/reappear
-	});
+		render(FOCUS, rk);
+	}
 }
 
 const pinsKey = () => PINS.join("|");
@@ -803,45 +747,47 @@ const pinsKey = () => PINS.join("|");
 // other two lists are sorted, so a given view always yields one canonical hash (and
 // one hash always rebuilds the same view). Trailing empty sections are omitted, so a
 // lone thread is just "<focus>".
-// Keep COLLAPSED to just the folds that actually shape the visible graph: drop any
-// whose thread isn't pinned, and any sitting under a higher collapse — a fold inside
-// an already-folded subtree is invisible, so it must not linger in the set or hash
-// (else two identical graphs could carry different hashes).
+// The session remembers every fold the user has set. pruneCollapsed drops only the ones
+// they can no longer reach — node gone, or thread no longer pinned — NOT the ones merely
+// hidden under a higher fold. That's the fix for "collapse X (which hid a collapsed Y),
+// expand X, and Y is forgotten": Y stays in the set while hidden, so re-expanding X
+// restores it. Canonicity is enforced at the hash instead — see effectiveFolds.
 function pruneCollapsed() {
-	// Up-folds: drop those whose thread isn't pinned, and any with a deeper up-fold
-	// below them on the same path (the deeper one already hides everything above it).
-	for (const rk of [...UPCOLLAPSED]) {
-		if (!INDEX[rk] || !PINS.includes(localRoot(rk))) { UPCOLLAPSED.delete(rk); continue; }
-		for (const o of UPCOLLAPSED) if (o !== rk && isAncestor(rk, o)) { UPCOLLAPSED.delete(rk); break; }
-	}
-	// Down-folds: drop those whose thread isn't pinned, those hidden under a higher
-	// down-fold, and those sitting outside a re-rooted thread's visible subtree.
-	for (const rk of [...COLLAPSED]) {
-		if (!INDEX[rk] || !PINS.includes(localRoot(rk))) { COLLAPSED.delete(rk); continue; }
-		let dead = false;
-		for (let p = INDEX[rk].p; p && INDEX[p] && !dead; p = INDEX[p].p) if (COLLAPSED.has(p)) dead = true;
-		if (!dead) {
-			const ups = [...UPCOLLAPSED].filter(u => localRoot(u) === localRoot(rk));
-			if (ups.length && !ups.some(u => u === rk || isAncestor(u, rk))) dead = true;
-		}
-		if (dead) COLLAPSED.delete(rk);
-	}
+	for (const rk of [...COLLAPSED]) if (!INDEX[rk] || !PINS.includes(localRoot(rk))) COLLAPSED.delete(rk);
+	for (const rk of [...UPCOLLAPSED]) if (!INDEX[rk] || !PINS.includes(localRoot(rk))) UPCOLLAPSED.delete(rk);
+}
+
+// The folds that actually SHAPE the visible graph — the canonical subset the hash carries,
+// so one view always yields one hash. Dropped here (but kept in the session set): a down-fold
+// hidden under a higher one, a down-fold outside a re-rooted subtree, and an up-fold made
+// redundant by a deeper up-fold below it. Pure; mutates nothing.
+function effectiveFolds() {
+	const up = [...UPCOLLAPSED].filter(rk =>
+		![...UPCOLLAPSED].some(o => o !== rk && isAncestor(rk, o)));   // a deeper up-fold already hides everything above rk
+	const collapsed = [...COLLAPSED].filter(rk => {
+		for (let p = INDEX[rk].p; p && INDEX[p]; p = INDEX[p].p) if (COLLAPSED.has(p)) return false;   // hidden under a higher down-fold
+		const ups = [...UPCOLLAPSED].filter(u => localRoot(u) === localRoot(rk));
+		if (ups.length && !ups.some(u => u === rk || isAncestor(u, rk))) return false;                // outside the re-rooted subtree
+		return true;
+	});
+	return {collapsed, up};
 }
 
 // "<focus>;<pinnedRoots>;<down-collapsed>;<up-collapsed>" — four comma-lists. Down
 // folds hide a subtree; up folds re-root a thread. All lists sorted so the view is
 // canonical both ways; trailing empty sections are trimmed.
-function hashFor(focus, pins, collapsed, upcollapsed) {
+function hashFor(focus, pins) {
 	const fr = localRoot(focus);
 	const roots = pins.filter(p => p !== fr).map(refOf).sort();
-	return [refOf(focus), roots.join(","), [...collapsed].map(refOf).sort().join(","), [...upcollapsed].map(refOf).sort().join(",")]
+	const {collapsed, up} = effectiveFolds();   // canonical visible subset; the session set may remember more
+	return [refOf(focus), roots.join(","), collapsed.map(refOf).sort().join(","), up.map(refOf).sort().join(",")]
 		.join(";").replace(/;+$/, "");
 }
 
 // lastShown tracks the hash we last acted on, so the popstate+hashchange pair a
 // single history move fires (and our own writes) don't re-trigger a restore.
-function writeHash(focus, pins, collapsed, upcollapsed, replace) {
-	const hash = "#" + hashFor(focus, pins, collapsed, upcollapsed);
+function writeHash(focus, pins, replace) {
+	const hash = "#" + hashFor(focus, pins);
 	if (replace) history.replaceState(null, "", hash);
 	else history.pushState(null, "", hash);
 	lastShown = location.hash;
@@ -851,7 +797,7 @@ function writeHash(focus, pins, collapsed, upcollapsed, replace) {
 // and editing it loads that thread (a pasted post URL is normalised to a token first).
 const syncURL = () => { $("#url").value = decodeURIComponent(location.hash.slice(1)); };
 // Write the live view (focus + pins + both fold sets) — used by the fold toggles.
-const writeState = (replace) => writeHash(FOCUS, PINS, COLLAPSED, UPCOLLAPSED, replace);
+const writeState = (replace) => writeHash(FOCUS, PINS, replace);
 
 function parseHash() {
 	const raw = decodeURIComponent(location.hash.slice(1));
@@ -920,17 +866,17 @@ async function showView(focus, roots, push, collapsed, up) {
 		pins.sort();                                 // canonical: same threads always lay out + hash the same
 		FOCUS = focusRk; PINS = pins;
 		pruneCollapsed();
-		render(focusRk);
+		return render(focusRk);                      // the view's settle promise, so we can await the build below
 	};
 	// Cached focus → paint from cache immediately, fetch in the background, and after the
 	// in-flight stagger drains, paint again to fold in any newly-arrived replies/quotes.
 	// Network-only focus has no cache to draw from, so we await the fetch before painting.
 	if (INDEX[focusRk]) {
-		paint();
-		if (myToken === showViewToken) writeHash(focusRk, PINS, COLLAPSED, UPCOLLAPSED, replace);
+		const first = paint();
+		if (myToken === showViewToken) writeHash(focusRk, PINS, replace);
 		if (toFetch.length) {
 			await Promise.all(toFetch.map(fetchThread));
-			while (staggerTimer && myToken === showViewToken) await new Promise(r => setTimeout(r, 50));
+			await first;                                 // let the first build's animation settle before folding in fetched posts
 			if (myToken === showViewToken) { lastPinsKey = null; paint(); }
 		}
 	} else {
@@ -938,7 +884,7 @@ async function showView(focus, roots, push, collapsed, up) {
 		await Promise.all(toFetch.map(fetchThread));
 		setStatus("");
 		paint();
-		if (myToken === showViewToken && INDEX[focusRk]) writeHash(focusRk, PINS, COLLAPSED, UPCOLLAPSED, replace);
+		if (myToken === showViewToken && INDEX[focusRk]) writeHash(focusRk, PINS, replace);
 	}
 }
 
@@ -964,248 +910,62 @@ function toggleThread(rkey) {
 	showView(localRoot(FOCUS) === root ? pins[0] : FOCUS, pins, true);
 }
 
-function render(focus, anchorOverride = null) {
-	const prevFocus = FOCUS;             // captured before we overwrite, so we can anchor the new layout against it
-	const origin = anchorOverride || focus;   // wave epicenter: the toggled node for collapse/up-fold, the clicked node otherwise
+function render(focus, anchorOverride = null, collapseFirst = false) {
+	const prevFocus = FOCUS;             // captured before we overwrite, so the view can anchor against it
 	FOCUS = focus;
-	finalizeAnim();                      // settle any in-flight stagger before this render reconciles
 	updateHeader(focus);                 // top-left reflects the focused author (both paths)
 	$("#hint").style.display = "none";
 
-	// keep the sidebar's active highlight in sync as the pinned set changes (the
-	// list isn't rebuilt on navigation): a row is active when its graph is pinned.
+	// keep the sidebar's active highlight in sync as the pinned set changes (the list isn't
+	// rebuilt on navigation): a row is active when its graph is pinned.
 	document.querySelectorAll("#sidebar li[data-group]").forEach(it =>
 		it.classList.toggle("active", PINS.includes(it.dataset.group)));
 
-	// Same pinned set already on screen → no relayout/refit; just move the focus
-	// highlight and pan the new post into view if it's off-screen.
-	if (pinsKey() === lastPinsKey && lastPos && lastPos[focus]) {
-		setFocusNode(focus);
-		panIntoView(focus);
-		return;
+	// Same pinned set already on screen → no relayout; just recompute the selection classes
+	// (refresh re-runs renderNode) and pan the new post into view if it's off-screen.
+	if (pinsKey() === lastPinsKey && view.getElement(focus)) {
+		view.refresh();
+		view.panIntoView(focus);
+		return Promise.resolve();
 	}
 
-	// Build the visible subgraph, the per-post badge, then MEASURE each post's height
-	// by rendering its HTML card offscreen — that height feeds the (pure) tidy-tree
-	// packing. The browser does the wrapping and content layout; we only place boxes.
-	const view = buildVisible(PINS, focus);
-	const {tree, treeKids, grafts, quoteEdges, satNodes, satEdges} = view;
-	const badge = {};
-	for (const rk of tree) {
+	// Build the visible subgraph and the per-key metadata renderNode reads (badge, kind,
+	// graft, sidecar direction). The view measures + packs from the description below.
+	const v = buildVisible(PINS, focus);
+	const meta = {};
+	for (const rk of v.tree) {
 		const e = INDEX[rk];
-		badge[rk] = grafts.has(rk) && !e.tweet ? "↪ quoted"   // a grafted quote-reply shortcut
-			: e.tweet ? "𝕏 " + (e.a || "post")
-			: authorOf(rk).name.slice(0, 24);                 // the author's display name (or @handle)
+		meta[rk] = {sidecar: false, graft: v.grafts.has(rk),
+			badge: v.grafts.has(rk) && !e.tweet ? "↪ quoted"
+				: e.tweet ? "𝕏 " + (e.a || "post")
+				: authorOf(rk).name.slice(0, 24)};
 	}
-	for (const s of satNodes)                                // satellite badge is just the author; the .qout/.qin class adds the relationship label in CSS
-		badge[s.rkey] = INDEX[s.rkey].tweet ? "𝕏 " + (INDEX[s.rkey].a || "post") : authorOf(s.rkey).name.slice(0, 16);
-	const hmap = {};
-	for (const rk of tree) hmap[rk] = measureHeight(rk, badge[rk]);
-	for (const s of satNodes) if (!(s.rkey in hmap)) hmap[s.rkey] = measureHeight(s.rkey, badge[s.rkey]);
-	const H = (rk) => hmap[rk];
-	const {pos, satPos, bounds} = computeLayout(view, H);
+	for (const s of v.satNodes) {
+		const e = INDEX[s.rkey];
+		meta[s.rkey] = {sidecar: true, dir: s.dir, graft: false,
+			badge: e.tweet ? "𝕏 " + (e.a || "post") : authorOf(s.rkey).name.slice(0, 16)};
+	}
+	currentView = {view: v, meta};
 
-	// Anchor the new layout against a survivor whose role doesn't change — the previous
-	// focus (always a tree node before and after), or the new focus when prev was dropped
-	// (un-pin's promoted survivor). Shift every position by the delta so the survivor
-	// keeps its scene-coord pose. This holds layouts in the same scene region across
-	// single↔multi transitions: survivors don't glide, leaves fade in place, the camera
-	// only retargets to expanded bounds.
-	const ref = anchorOverride && nodeEls[anchorOverride] && pos[anchorOverride] ? anchorOverride
-		: nodeEls[prevFocus] && pos[prevFocus] ? prevFocus
-		: nodeEls[focus] && pos[focus] ? focus
-		: null;
-	if (ref) {
-		const g = nodeEls[ref], dx = g.__x - pos[ref].x, dy = g.__y - pos[ref].y;
-		if (dx || dy) {
-			for (const k in pos) { pos[k].x += dx; pos[k].y += dy; }
-			for (const k in satPos) { satPos[k].x += dx; satPos[k].y += dy; }
-			bounds[0] += dx; bounds[1] += dy; bounds[2] += dx; bounds[3] += dy;
-		}
-	}
-
-	// ---- draw (reconcile) ----
-	ensureLayers();
-
-	// One flat list of every node in the view with its target geometry and classes.
-	const items = [];
-	for (const rk of tree) {
-		const cls = [rk === focus && "focus", PINS.length > 1 && PINS.includes(rk) && "root"].filter(Boolean).join(" ");
-		items.push({rk, x: pos[rk].x, y: pos[rk].y, h: H(rk), cls, badge: badge[rk], dbl: grafts.has(rk), tree: true});
-	}
-	for (const s of satNodes) {
-		const rel = INDEX[s.rkey].tweet ? "" : s.dir === "out" ? " qout" : " qin";   // CSS turns these into the relationship label
-		items.push({rk: s.rkey, x: satPos[s.rkey].x, y: satPos[s.rkey].y, h: H(s.rkey), cls: "quote" + rel, badge: badge[s.rkey], dbl: false});
-	}
-	const want = new Set(items.map(i => i.rk));
-	const added = [], removed = [];
-	for (const i of items) if (!nodeEls[i.rk]) added.push(i.rk);
-	for (const rk in nodeEls) if (!want.has(rk)) removed.push(rk);
-
-	// Keep/move/create each node. New ones start at opacity 0 (.enter); survivors get
-	// their new transform and glide to it via the CSS transition.
-	for (const i of items) {
-		let g = nodeEls[i.rk];
-		const isNew = !g;
-		if (isNew) { g = makeNode(i.rk); nodeLayer.appendChild(g); nodeEls[i.rk] = g; }
-		fillNode(g, i.rk, i.h, i.cls, i.badge, i.dbl);
-		if (i.tree && !i.dbl) {
-			if (children[i.rk].length) addCollapseToggle(g, i.rk, i.h);
-			if (INDEX[i.rk].p && INDEX[INDEX[i.rk].p]) addUpToggle(g, i.rk);   // has a real parent → can fold upward
-		}
-		g.style.transform = `translate(${i.x}px,${i.y}px)`;
-		g.__x = i.x; g.__y = i.y; g.__h = i.h;
-		if (isNew) g.classList.add("enter");
-	}
-
-	// Edges reconcile by their (a, b) endpoint pair so existing ones get their `d` updated
-	// in place — the CSS `d` transition then glides each path to its new shape in lockstep
-	// with the survivor node transforms. New edges fade in via opacity; gone ones drop out.
-	const oldEdgeByKey = {};
-	for (const it of edgeItems) oldEdgeByKey[`${it.a}|${it.b}`] = it.el;
-	const seenEdgeKeys = new Set();
-	edgeItems = [];
-	const FOLD_TIP = 12.5;                            // chevron extends this far past the node edge (B + tail in toggleShape)
-	const setEdge = (a, b, d, cls) => {
-		const key = `${a}|${b}`;
-		seenEdgeKeys.add(key);
-		let p = oldEdgeByKey[key];
-		if (p) { p.setAttribute("d", d); p.setAttribute("class", cls); }
-		else { p = el("path", {d, class: cls}, edgeLayer); p.style.opacity = 0; }
-		edgeItems.push({el: p, a, b});
-	};
-	for (const rk of tree) for (const c of treeKids[rk]) {
-		const y0 = pos[rk].y + H(rk) + FOLD_TIP;       // every parent in this loop has children → down-toggle present
-		const cp = INDEX[c].p, hasUp = cp && INDEX[cp];
-		const y1 = pos[c].y - (hasUp ? FOLD_TIP : 0);
-		const x1 = pos[rk].x + NODE_W / 2, x2 = pos[c].x + NODE_W / 2;
-		const dy = y1 - y0, co = Math.max(20, Math.abs(dy) * 0.4);
-		setEdge(rk, c, `M ${x1} ${y0} C ${x1} ${y0 + co}, ${x2} ${y1 - co}, ${x2} ${y1}`,
-			grafts.has(c) ? "edge graft" : "edge");
-	}
-	for (const {from, to} of quoteEdges)
-		setEdge(from, to, quoteCurve(pos[from], pos[to], H(from), H(to)), "edge quoteedge");
-	for (const e of satEdges) {
-		const d = e.dir === "out" ? quoteCurve(pos[e.anchor], satPos[e.sat], H(e.anchor), H(e.sat))
-			: quoteCurve(satPos[e.sat], pos[e.anchor], H(e.sat), H(e.anchor));
-		setEdge(e.anchor, e.sat, d, "edge quoteedge");
-	}
-	for (const key in oldEdgeByKey) if (!seenEdgeKeys.has(key)) oldEdgeByKey[key].remove();
-
-	markFocal(focus);                            // whiten the focused post's author
-	lastPinsKey = pinsKey(); lastPos = pos; lastH = H; lastBounds = bounds;
-
-	// Every view builds in gradually — nothing ever pops in fully formed. A swap changes
-	// both sides at once (old leaves AND new arrives); an in-place edit only adds (expand/
-	// merge) or only removes (collapse/unmerge).
-	const replace = added.length > 0 && removed.length > 0;
-	if (replace && added.length === items.length) {
-		// Nothing in common (a list/search click → unrelated thread): drop the old map at
-		// once and just build the new one. The prior camera pose is on scene coords that no
-		// longer exist, so re-arm autofit — there's no framing left to preserve.
-		userMoved = false;
-		dropLeavers(removed);
-		startStagger(added, [], origin, false, bounds);
-	} else {
-		// A bridge swap clears centre-first, keeping the fading old map at the edges, clear
-		// of where the new one builds out; an in-place edit retracts leaves-first.
-		startStagger(added, removed, origin, replace, bounds);
-	}
-	markSearchHits();                            // freshly drawn nodes pick up the active search
+	// Hand the view the neutral description (quotes → sidecars + cross-links), the wave
+	// origin, the anchor candidates (a survivor held still across the relayout, first that
+	// exists wins), and the collapse choreography flag. anchorOverride is the toggled fold.
+	lastPinsKey = pinsKey();
+	return view.update({
+		nodes: v.tree,
+		children: v.treeKids,
+		roots: v.displayRoots,
+		crossEdges: v.quoteEdges,
+		sidecars: v.satNodes.map(s => ({key: s.rkey, anchor: s.anchor, side: s.dir === "in" ? "left" : "right"})),
+		sidecarEdges: v.satEdges.map(e => ({anchor: e.anchor, key: e.sat, side: e.dir === "in" ? "left" : "right"})),
+		origin: anchorOverride || focus,
+		anchorKeys: [anchorOverride, prevFocus, focus].filter(Boolean),
+		collapseFirst,
+	});
 }
 
-// Create the two persistent layers inside #scene once; renders reconcile into them.
-function ensureLayers() {
-	if (nodeLayer) return;
-	edgeLayer = el("g", {}, scene);
-	nodeLayer = el("g", {}, scene);
-}
-
-const nodeShowing = (rk) => { const g = nodeEls[rk]; return g && !g.classList.contains("enter") && !g.classList.contains("leave"); };
-// An edge shows only when both its endpoints are visible.
-function refreshEdges() { for (const it of edgeItems) it.el.style.opacity = (nodeShowing(it.a) && nodeShowing(it.b)) ? 1 : 0; }
-
-// Camera fit to whatever nodes are visible right now (drives the gradual rezoom).
-function fitVisible(animate) {
-	let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, any = false;
-	for (const rk in nodeEls) {
-		if (!nodeShowing(rk)) continue;
-		const g = nodeEls[rk]; any = true;
-		minX = Math.min(minX, g.__x); minY = Math.min(minY, g.__y);
-		maxX = Math.max(maxX, g.__x + NODE_W); maxY = Math.max(maxY, g.__y + g.__h);
-	}
-	if (any) fitView(minX, minY, maxX, maxY, animate, CAM_MS);
-}
-
-function dropLeavers(list) { for (const rk of list) { const g = nodeEls[rk]; if (g) { g.remove(); delete nodeEls[rk]; } } }
-
-// Each node's transition fires at a time proportional to its scene-coord distance from the
-// focus, so destruction and construction radiate as smooth concentric waves rather than
-// batched lumps. Replace clears centre-first (so the new map grows from the centre); a
-// non-replace removal retracts leaves-first (toward the join the user folded). Builds
-// always grow outward. Build trails destroy by a small constant lag — same rate means
-// build never overtakes the destroy wave at any radius.
-const WAVE_RATE = 1.5;     // scene px per ms — wavefront speed for both phases
-const CHASE_MS = 150;      // build wavefront trails destroy wavefront by this many ms (at every radius)
-// Fade a set of nodes out radially, outer-first, around a centre. Returns the wave's
-// duration; the caller decides what to do once the leavers are gone (e.g. trigger a render).
-function leaveWave(rks, centreRk) {
-	if (!rks.length || !nodeEls[centreRk]) return 0;
-	const c = nodeEls[centreRk], cx = c.__x + NODE_W / 2, cy = c.__y + c.__h / 2;
-	const dist = (rk) => { const g = nodeEls[rk]; return Math.hypot(g.__x + NODE_W / 2 - cx, g.__y + g.__h / 2 - cy); };
-	const maxD = Math.max(...rks.map(dist));
-	for (const rk of rks) setTimeout(() => {
-		if (!nodeEls[rk]) return;
-		nodeEls[rk].classList.add("leave");
-		refreshEdges();                              // edges to this node fade with it
-	}, (maxD - dist(rk)) / WAVE_RATE);
-	return maxD / WAVE_RATE;
-}
-function startStagger(added, removed, focusRk, replace, finalBounds) {
-	const f = nodeEls[focusRk], cx = f.__x + NODE_W / 2, cy = f.__y + f.__h / 2;
-	const dist = (rk) => { const g = nodeEls[rk]; return Math.hypot(g.__x + NODE_W / 2 - cx, g.__y + g.__h / 2 - cy); };
-	const events = [];
-	const removeD = removed.map(rk => ({rk, d: dist(rk)}));
-	const maxRemoveD = removeD.reduce((m, e) => Math.max(m, e.d), 0);
-	for (const {rk, d} of removeD) events.push({op: "leave", rk, t: (replace ? d : maxRemoveD - d) / WAVE_RATE});
-	const buildStart = removed.length ? CHASE_MS : 0;   // a constant trail — both waves at one rate, build can't overtake
-	for (const rk of added) events.push({op: "enter", rk, t: buildStart + dist(rk) / WAVE_RATE});
-	events.sort((a, b) => a.t - b.t);
-	// Anchor the first event at t=0 — no blank lead-in when the innermost item is offset
-	// from the focus.
-	if (events.length) { const t0 = events[0].t; for (const e of events) e.t -= t0; }
-	// One camera glide to the final bounds, easing for the full wave duration plus the
-	// node's own CSS transition tail (.3s on transform). The camera arrives just as the
-	// last node settles — no per-tick refits, no throttled-out final fit.
-	const settleMs = events.length ? events[events.length - 1].t + 300 : 0;
-	if (finalBounds && !userMoved && settleMs) fitView(...finalBounds, true, settleMs);
-	const start = performance.now();
-	let i = 0;
-	const tick = () => {
-		const elapsed = performance.now() - start;
-		while (i < events.length && events[i].t <= elapsed) {
-			const ev = events[i++];
-			if (ev.op === "enter") nodeEls[ev.rk].classList.remove("enter");
-			else nodeEls[ev.rk].classList.add("leave");
-		}
-		refreshEdges();
-		// Sleep until the next event's scheduled time — no polling between events.
-		if (i < events.length) staggerTimer = setTimeout(tick, Math.max(0, events[i].t - elapsed));
-		else { staggerTimer = null; if (removed.length) setTimeout(() => dropLeavers(removed), 300); }
-	};
-	tick();   // fires any t=0 events immediately, then self-schedules to the next
-}
-
-// Cut any running stagger to its end state instantly (called before each new render).
-function finalizeAnim() {
-	if (staggerTimer) { clearTimeout(staggerTimer); staggerTimer = null; }
-	for (const rk in nodeEls) {
-		const g = nodeEls[rk];
-		if (g.classList.contains("leave")) { g.remove(); delete nodeEls[rk]; }
-		else g.classList.remove("enter");
-	}
-	refreshEdges();
-}
+// (Layers, reconcile, the stagger/leave waves, finalize, and the camera all live in
+// flexforest-view now. render() above hands the view a description; the view does the rest.)
 
 const rkeyOf = (uri) => uri.split("/").pop();
 
@@ -1425,201 +1185,14 @@ function showHash(initial) {
 	else { const f = topThreads()[0]; if (f) navigate(f.rkey); }
 }
 
-// Move the .focus highlight to a node without redrawing (data-rkey set on each).
-function setFocusNode(focus) {
-	scene.querySelectorAll("g.node.focus").forEach(n => n.classList.remove("focus"));
-	const n = scene.querySelector(`g.node[data-rkey="${CSS.escape(focus)}"]`);
-	if (n) n.classList.add("focus");
-	markFocal(focus);
-}
+// Focus highlight, focal-author whitening, and search rings used to be separate DOM passes
+// (setFocusNode/markFocal/markSearchHits); they're now folded into nodeClass + view.refresh().
+// Edge geometry (quoteCurve), the camera (fitView/panIntoView), and pointer interaction all
+// moved into flexforest-view too.
 
-// Whiten the focused post's author: tag every authored node by that author with .focal.
-// Paint-only (fill/stroke), so it's cheap on refocus; no per-author slot rules, no cap.
-function markFocal(focus) {
-	const fa = authorDid(focus);
-	for (const rk in nodeEls) nodeEls[rk].classList.toggle("focal", nodeEls[rk].classList.contains("au") && authorDid(rk) === fa);
-}
-
-// Ring the graph nodes whose text matches the search box, so a post can be found
-// in the tree the way it can in the sidebar. Re-run after every render (nodes are
-// rebuilt) and on each keystroke.
-function markSearchHits() {
-	const q = $("#q").value.trim().toLowerCase();
-	for (const n of scene.querySelectorAll("g.node"))
-		n.classList.toggle("hit", !!q && searchText(INDEX[n.dataset.rkey]).includes(q));
-}
-
-// Pan just enough to bring a node fully into view; if it's already visible, do nothing.
-function panIntoView(focus) {
-	const p = lastPos[focus];
-	if (!p) return;
-	const h = lastH(focus), m = 40, rect = svg.getBoundingClientRect();
-	const x1 = p.x * scale + tx, y1 = p.y * scale + ty;
-	const x2 = x1 + NODE_W * scale, y2 = y1 + h * scale;
-	let dx = 0, dy = 0;
-	if (x1 < m) dx = m - x1; else if (x2 > rect.width - m) dx = rect.width - m - x2;
-	if (y1 < m) dy = m - y1; else if (y2 > rect.height - m) dy = rect.height - m - y2;
-	if (dx || dy) animateTo(tx + dx, ty + dy, scale);
-}
-
-// Quote-edge path from box s to box d. The line may leave s in any direction; it
-// arrives within 30° of perpendicular to the face it lands on — enough that the
-// arrowhead (marker orient=auto follows the final tangent) reads as aimed at the
-// box, but loose enough that the line curves smoothly into the arrowhead rather
-// than snapping square at the very end.
-const EDGE_OFF = 14;
-function quoteCurve(s, d, hs, hd) {
-	const scx = s.x + NODE_W / 2, scy = s.y + hs / 2;
-	const dcx = d.x + NODE_W / 2, dcy = d.y + hd / 2;
-	// Attach on the facing edges; nudge the endpoints along the other axis so an
-	// outgoing and an incoming edge on the same side don't sit on top of each other.
-	// `into` is the unit vector pointing from the landing point into box d.
-	// Stagger the attach points: face centre + EDGE_OFF (keeps a tail clear of a
-	// reverse head) + a heading-based offset along the face, so several edges on the
-	// same box fan by direction (heading up → leave/enter higher, down → lower,
-	// straight across → middle) instead of piling on one point. Clamped to the face.
-	const dist = Math.hypot(dcx - scx, dcy - scy) || 1, STAGGER = 16;
-	const onFace = (c, half, base, dir) => { const lim = half - 6; return c + Math.max(-lim, Math.min(lim, base + dir)); };
-	let p1, p2, into;
-	if (Math.abs(dcx - scx) >= Math.abs(dcy - scy)) {       // left/right faces → stagger along y
-		const o = STAGGER * (dcy - scy) / dist;
-		p1 = {x: dcx >= scx ? s.x + NODE_W : s.x, y: onFace(scy, hs / 2, EDGE_OFF, o)};
-		p2 = {x: dcx >= scx ? d.x : d.x + NODE_W, y: onFace(dcy, hd / 2, -EDGE_OFF, -o)};
-		into = {x: dcx >= scx ? 1 : -1, y: 0};
-	} else {                                                // top/bottom faces → stagger along x
-		const o = STAGGER * (dcx - scx) / dist;
-		p1 = {x: onFace(scx, NODE_W / 2, EDGE_OFF, o), y: dcy >= scy ? s.y + hs : s.y};
-		p2 = {x: onFace(dcx, NODE_W / 2, -EDGE_OFF, -o), y: dcy >= scy ? d.y : d.y + hd};
-		into = {x: 0, y: dcy >= scy ? 1 : -1};
-	}
-	const span = Math.hypot(p2.x - p1.x, p2.y - p1.y) || 1;
-	const k = Math.min(span * 0.4, 60);                 // control-arm length (capped so short edges don't fold)
-	// `into` is also the travel axis (out of s, into d). Measure the natural approach
-	// relative to it, then pull both ends toward perpendicular by different amounts.
-	const intoA = Math.atan2(into.y, into.x);
-	let dev = Math.atan2(p2.y - p1.y, p2.x - p1.x) - intoA;
-	dev = Math.atan2(Math.sin(dev), Math.cos(dev));     // → [-π, π]
-	// Exit: a gentle perpendicular bias (keep ~70% of the deviation) so lines emanate
-	// clearly from the box edge rather than reading as a curve at the origin.
-	const depA = intoA + dev * 0.7;
-	const c1 = {x: p1.x + Math.cos(depA) * k, y: p1.y + Math.sin(depA) * k};
-	// Arrival: clamp to within 30° of perpendicular so the arrowhead points at the box.
-	const arrA = intoA + Math.max(-Math.PI / 6, Math.min(Math.PI / 6, dev));
-	const c2 = {x: p2.x - Math.cos(arrA) * k, y: p2.y - Math.sin(arrA) * k};
-	return `M ${p1.x} ${p1.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${p2.x} ${p2.y}`;
-}
-
-function fitView(minX, minY, maxX, maxY, animate = true, ms) {
-	userMoved = false;                           // anything the user does after a fit re-arms the gate
-	const rect = svg.getBoundingClientRect();
-	const w = maxX - minX, h = maxY - minY, margin = 40;
-	const ns = Math.max(0.05, Math.min((rect.width - margin) / w, (rect.height - margin) / h, 1.4));
-	const nx = (rect.width - w * ns) / 2 - minX * ns;
-	const ny = Math.max(margin / 2, (rect.height - h * ns) / 2) - minY * ns;
-	if (animate) animateTo(nx, ny, ns, ms);    // ms omitted → animateTo's own default; the stagger passes a longer, gentler ease
-	else { stopCam(); tx = nx; ty = ny; scale = ns; applyTransform(); }
-}
-
-// ---------- interaction (pointer events cover mouse, touch and pen) ----------
-// #graph sets touch-action:none, so the browser hands us all touch gestures; we
-// drive pan from one pointer and pinch-zoom from two. didDrag suppresses the
-// node click after a drag/pinch (a clean tap leaves it false, so taps navigate).
-let panning = false, didDrag = false, startX = 0, startY = 0, startTx = 0, startTy = 0;
-// Long-press on a node toggles its thread (touch equivalent of ctrl/shift-click).
-let longPressTimer = null;
-const cancelLongPress = () => { if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; } };
-const pointers = new Map();                    // live pointers: id -> {x, y}
-let pinchDist = 0, pinchMx = 0, pinchMy = 0;   // last pinch gap + midpoint (svg-local)
-
-// Zoom by `factor` about a point (px,py) measured from the svg's top-left, so the
-// point under the cursor / pinch centre stays put. Shared by wheel and pinch.
-function zoomAt(factor, px, py) {
-	stopCam();
-	const ns = Math.max(0.05, Math.min(3, scale * factor));
-	tx = px - (px - tx) * (ns / scale);
-	ty = py - (py - ty) * (ns / scale);
-	scale = ns;
-	applyTransform();
-	userMoved = true;
-}
-
-function startPinch() {
-	const [a, b] = [...pointers.values()];
-	const rect = svg.getBoundingClientRect();
-	pinchDist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-	pinchMx = (a.x + b.x) / 2 - rect.left;
-	pinchMy = (a.y + b.y) / 2 - rect.top;
-}
-
-svg.addEventListener("pointerdown", (e) => {
-	stopCam();                                    // manual input cancels any camera animation
-	cancelLongPress();                            // a new pointer event invalidates any pending long-press
-	pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
-	if (pointers.size >= 2) {                     // second finger → pinch, not pan
-		panning = false;
-		startPinch();
-		return;
-	}
-	// Single pointer: pan only when the press starts on empty canvas. Starting
-	// inside a node leaves the text selectable (no grab) — we still track movement
-	// below so a drag-to-select there doesn't also count as a click.
-	didDrag = false;
-	startX = e.clientX; startY = e.clientY; startTx = tx; startTy = ty;
-	const node = e.target.closest(".node");
-	panning = !node;
-	if (panning) svg.classList.add("grabbing");
-	else if (!(e.ctrlKey || e.metaKey || e.shiftKey) && !e.target.closest("a, button")) {
-		// Hold on a node without modifier → toggleThread; flagging didDrag suppresses the
-		// click that pointerup would otherwise dispatch (same gate the click handler checks).
-		// Press starting on an in-card link or button is left alone — that's the user's intent.
-		const rkey = node.dataset.rkey;
-		longPressTimer = setTimeout(() => {
-			longPressTimer = null; didDrag = true; toggleThread(rkey);
-		}, 500);
-	}
-});
-
-window.addEventListener("pointermove", (e) => {
-	if (!pointers.has(e.pointerId)) return;
-	pointers.set(e.pointerId, {x: e.clientX, y: e.clientY});
-	if (pointers.size >= 2) {                    // pinch: zoom about the midpoint, pan by its drift
-		const [a, b] = [...pointers.values()];
-		const rect = svg.getBoundingClientRect();
-		const dist = Math.hypot(a.x - b.x, a.y - b.y) || 1;
-		const mx = (a.x + b.x) / 2 - rect.left, my = (a.y + b.y) / 2 - rect.top;
-		zoomAt(dist / pinchDist, mx, my);
-		tx += mx - pinchMx; ty += my - pinchMy;
-		applyTransform();
-		pinchDist = dist; pinchMx = mx; pinchMy = my;
-		didDrag = true;
-	} else {                                     // single pointer
-		const dx = e.clientX - startX, dy = e.clientY - startY;
-		if (Math.abs(dx) + Math.abs(dy) > 3) { didDrag = true; cancelLongPress(); }   // movement → not a tap, not a long-press
-		if (panning) { tx = startTx + dx; ty = startTy + dy; applyTransform(); userMoved = true; }   // pan only off empty canvas
-	}
-});
-
-function endPointer(e) {
-	cancelLongPress();
-	pointers.delete(e.pointerId);
-	if (pointers.size === 1) {                   // dropped from pinch to one finger: resume panning
-		const [p] = [...pointers.values()];
-		panning = true; didDrag = true;            // still mid-gesture, so not a tap
-		startX = p.x; startY = p.y; startTx = tx; startTy = ty;
-	} else if (pointers.size === 0) {
-		panning = false; svg.classList.remove("grabbing");
-	}
-}
-window.addEventListener("pointerup", endPointer);
-window.addEventListener("pointercancel", endPointer);
-
-svg.addEventListener("wheel", (e) => {
-	e.preventDefault();
-	const rect = svg.getBoundingClientRect();
-	zoomAt(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX - rect.left, e.clientY - rect.top);
-}, {passive: false});
-
-$("#fit").onclick = () => { if (lastBounds) fitView(...lastBounds); };
+// Pan / zoom / pinch / long-press and the camera all live in flexforest-view (it binds the
+// svg + window pointer handlers in its constructor). The page only drives the Fit button.
+$("#fit").onclick = () => view.fit();
 
 // The URL field sets the hash, which drives everything (hashchange → showHash). A
 // pasted at:// URI or bsky.app post URL becomes a focus token; a pasted link to this
@@ -1646,7 +1219,7 @@ $("#theme").onclick = () => {
 let searchTimer;
 $("#q").addEventListener("input", () => {
 	clearTimeout(searchTimer);
-	searchTimer = setTimeout(() => { buildSidebar(); markSearchHits(); }, 700);
+	searchTimer = setTimeout(() => { buildSidebar(); view.refresh(); }, 700);   // refresh re-rings graph matches
 });
 
 // Hovering a sidebar row draws a box around the run of rows in the same tree.
@@ -1682,10 +1255,8 @@ $("#sidebar").addEventListener("mouseleave", () => setKin(null));
 // history move; showHash's lastShown guard collapses them to a single restore.
 window.addEventListener("popstate", () => showHash(false));
 window.addEventListener("hashchange", () => showHash(false));
-// SVG box changed (window resized, sidebar collapsed/opened); refit unless the user has framed something themselves.
-// SVG box changed (window resize, sidebar collapsed/opened); refit unless the user has framed
-// something themselves OR a stagger is in flight (would otherwise snap its camera mid-glide).
-new ResizeObserver(() => { if (!userMoved && !staggerTimer && lastBounds) fitView(...lastBounds, false); }).observe(svg);
+// (The view refits on its own ResizeObserver when the svg box changes — sidebar toggle,
+// window resize — gated on userMoved and an in-flight animation.)
 load();   // module is deferred, so the DOM is ready
 </script>
 </body>
