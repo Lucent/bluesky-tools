@@ -1,79 +1,41 @@
 #!/usr/bin/env python3
-"""
-goat_bluesky_to_atlas.py  ──  turn a Bluesky repo dump (GOAT export)
-into a JSONL ready for Nomic Atlas semantic search + thread filters
-"""
-import json, os, sys
-from collections import defaultdict
+"""Turn an unpacked Bluesky archive into JSONL for Nomic Atlas semantic search --
+one line per post, annotated with thread_id / parent_id / depth so Atlas can facet
+whole threads. Record parsing is shared with the other tools (thread_graph)."""
 
-# ---------- helpers reused from your existing script ----------
-def read_json(fp):
-	with open(fp, "r") as f:
-		return json.load(f)
+import json
+import sys
 
-def walk_posts(repo_dir):
-	post_dir = os.path.join(repo_dir, "app.bsky.feed.post")
-	for root, _, files in os.walk(post_dir):
-		for fname in files:
-			post = read_json(os.path.join(root, fname))
-			post["rkey"] = os.path.splitext(fname)[0]
-			yield post
+from thread_graph import parent_rkey, read_posts
 
-# ---------- build parent / child graph ----------
-def index_by_rkey(posts):
-	return {p["rkey"]: p for p in posts}
 
-def attach_children(posts, idx):
-	# reuse the same reply-link logic you already tested
-	for p in posts:
-		p["children"] = []
-	for p in posts:
-		if "reply" in p and "parent" in p["reply"]:
-			parent_rkey = p["reply"]["parent"]["uri"].split("/")[-1]
-			if parent_rkey in idx:						# internal reply
-				idx[parent_rkey]["children"].append(p)	# :contentReference[oaicite:3]{index=3}
-	return posts
+def annotate(posts):
+	by_rkey = {p["rkey"]: p for p in posts}
 
-# ---------- derive thread_id, parent_id, depth ----------
-def annotate_threads(posts, idx):
 	def root_and_depth(post):
 		depth = 0
-		cur = post
-		while "reply" in cur and "parent" in cur["reply"]:
-			parent_rkey = cur["reply"]["parent"]["uri"].split("/")[-1]
-			if parent_rkey not in idx:			# replied to someone outside dump
-				break
-			cur = idx[parent_rkey]
+		while (parent := parent_rkey(post)) and parent in by_rkey:
+			post = by_rkey[parent]
 			depth += 1
-		return cur["rkey"], depth
+		return post["rkey"], depth
 
 	for p in posts:
-		thread_id, depth = root_and_depth(p)
-		parent_id = (
-			p["reply"]["parent"]["uri"].split("/")[-1]
-			if "reply" in p and "parent" in p["reply"] else None
-		)
-		p["thread_id"] = thread_id
-		p["parent_id"] = parent_id
-		p["depth"] = depth
-	return posts
+		p["thread_id"], p["depth"] = root_and_depth(p)
 
-# ---------- emit JSON-lines ----------
-def write_jsonl(posts):
+
+def main():
+	posts = read_posts(sys.argv[1])
+	annotate(posts)
 	for p in posts:
 		print(json.dumps({
 			"id": p["rkey"],
 			"text": p["text"],
 			"created_at": p["createdAt"],
 			"thread_id": p["thread_id"],
-			"parent_id": p["parent_id"],
+			"parent_id": parent_rkey(p),
 			"depth": p["depth"],
 		}, ensure_ascii=False))
 
+
 if __name__ == "__main__":
-	repo_root = sys.argv[1]			  # path to repo export dir
-	posts = list(walk_posts(repo_root))
-	idx = index_by_rkey(posts)
-	attach_children(posts, idx)
-	annotate_threads(posts, idx)
-	write_jsonl(posts)
+	main()

@@ -1,12 +1,10 @@
 services:
   thread-browser:
     image: thread-browser:latest
-    container_name: thread-browser
     restart: unless-stopped
 
   tunnel:
     image: cloudflare/cloudflared:latest
-    container_name: tunnel-thread-browser
     restart: unless-stopped
     depends_on:
       - thread-browser

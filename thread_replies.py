@@ -1,162 +1,148 @@
+#!/usr/bin/env python3
+"""Threaded plain-text export of a Bluesky archive: chronological, quotes inlined,
+solo quoted posts deduped -- the shape that reads best when fed to an LLM.
+Record parsing is shared with the other tools (thread_graph)."""
+
 import json
 import os
+import re
 import sys
 
-def read_json(filename):
-	with open(filename, 'r') as file:
-		return json.load(file)
+from thread_graph import parent_rkey, quoted_rkeys, read_posts
 
-def transform_text_to_markdown(text, facets):
-	for facet in reversed(facets):
-		if facet['features'][0]['$type'] != "app.bsky.richtext.facet#link":
+POST_LINK = re.compile(r"/post/([0-9a-z]+)")
+
+
+def markdown_text(text, facets):
+	"""Inline link facets as [text](uri). Facet offsets are BYTE offsets into the
+	UTF-8 encoding, so slice the encoded bytes, never the str."""
+	b = text.encode()
+	out, cursor = [], 0
+	for facet in sorted(facets or [], key=lambda f: f["index"]["byteStart"]):
+		feature = facet["features"][0]
+		if feature["$type"] != "app.bsky.richtext.facet#link":
 			continue
-		start = facet['index']['byteStart']
-		end = facet['index']['byteEnd']
-		link = facet['features'][0]['uri']
-		link_text = text[start:end]
-		text = text[:start] + f"[{link_text}]({link})" + text[end:]
-	return text
+		start, end = facet["index"]["byteStart"], facet["index"]["byteEnd"]
+		if start < cursor:
+			continue
+		out.append(b[cursor:start].decode())
+		out.append(f"[{b[start:end].decode()}]({feature['uri']})")
+		cursor = end
+	out.append(b[cursor:].decode())
+	return "".join(out)
 
-def read_posts_from_directory(directory, limit=None):
-	posts = []
-	for root, _, files in os.walk(directory):
-		for file in files:
-			filepath = os.path.join(root, file)
-			post = read_json(filepath)
-			rkey = os.path.splitext(file)[0]
-			post['rkey'] = rkey
-			posts.append(post)
-	posts.sort(key=lambda x: x['createdAt'])
-	if limit and len(posts) > limit:
-		posts = posts[-limit:]
-	return posts
+
+def media_lines(post):
+	"""Text stand-ins for embedded media: the author's alt text when there is one, a
+	bare placeholder when there isn't (never an empty '[]')."""
+	embed = post.get("embed") or {}
+	media = embed.get("media", {}) if embed.get("$type") == "app.bsky.embed.recordWithMedia" else embed
+	kind = media.get("$type")
+	if kind == "app.bsky.embed.images":
+		return [f"[{img.get('alt') or 'image'}]" for img in media.get("images", [])]
+	if kind == "app.bsky.embed.external":
+		ext = media.get("external", {})
+		return [f"[{ext.get('title') or 'link'}]({ext.get('uri', '')})"]
+	if kind == "app.bsky.embed.video":
+		return [f"[{media.get('alt') or 'video'}]"]
+	return []
+
+
+def quote_keys(post):
+	"""Every rkey this post quotes: embed quotes plus facet links to a post URL --
+	the same facet-promotion rule the browser applies at intake."""
+	keys = list(quoted_rkeys(post))
+	for facet in post.get("facets") or []:
+		for feature in facet.get("features", []):
+			if feature.get("$type") == "app.bsky.richtext.facet#link":
+				m = POST_LINK.search(feature.get("uri", ""))
+				if m:
+					keys.append(m.group(1))
+	return keys
+
 
 def process_posts(posts):
-	posts_by_rkey = {post['rkey']: post for post in posts}
+	"""Wire the reply forest and inline quotes; return the chronological root stream."""
+	by_rkey = {p["rkey"]: p for p in posts}
+
+	# Render every post's text first, so a quote block always inlines finished markdown.
+	for post in posts:
+		post["has_words"] = bool(post["text"].strip())
+		post["text"] = "\n".join([markdown_text(post["text"], post.get("facets"))] + media_lines(post)).strip("\n")
+		post["replies"] = []
+		post["quoted"] = []
 
 	for post in posts:
-		post['replies'] = []
-		if 'facets' in post:
-			post['text'] = transform_text_to_markdown(post['text'], post['facets'])
+		parent = parent_rkey(post)
+		if parent and parent in by_rkey:
+			by_rkey[parent]["replies"].append(post)
+		elif parent:
+			post["external_reply"] = True
+		for key in dict.fromkeys(quote_keys(post)):
+			if key in by_rkey and key != post["rkey"]:
+				post["quoted"].append(by_rkey[key])
 
-		if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.images":
-			images_text = '\n'.join([f"[{image['alt']}]" for image in post['embed']['images']])
-			post['text'] += f"\n{images_text}"
+	# A wordless reply into someone else's thread gives a text reader nothing (its
+	# payload is a bare image or a quote connector); drop it unless our own replies
+	# hang off it. Quotes are then counted over the survivors, so a post quoted only
+	# by a dropped connector still surfaces as its own root.
+	survivors = [p for p in posts if p["has_words"] or not p.get("external_reply") or p["replies"]]
+	quoted_anywhere = {q["rkey"] for p in survivors for q in p["quoted"]}
 
-		if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.external":
-			embed = post['embed']['external']
-			post['text'] += f"\n[{embed['title']}]({embed['uri']})"
-
-		if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.record":
-			quoted_rkey = post['embed']['record']['uri'].split('/')[-1]
-			if quoted_rkey in posts_by_rkey:
-				quoted_post = posts_by_rkey[quoted_rkey]
-				date = quoted_post['createdAt'].split('T')[0]
-				# Store raw quoted text
-				post['quotedText'] = quoted_post['text']
-				post['quotedDate'] = date
-
-		if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.recordWithMedia":
-			media = post['embed']['media']
-			if media['$type'] == "app.bsky.embed.images":
-				images_text = '\n'.join([f"[{image['alt']}]" for image in media['images']])
-				post['text'] += f"\n{images_text}"
-			elif media['$type'] == "app.bsky.embed.external":
-				embed = media['external']
-				post['text'] += f"\n[{embed['title']}]({embed['uri']})"
-
-			quoted_rkey = post['embed']['record']['record']['uri'].split('/')[-1]
-			if quoted_rkey in posts_by_rkey:
-				quoted_post = posts_by_rkey[quoted_rkey]
-				date = quoted_post['createdAt'].split('T')[0]
-				post['quotedText'] = quoted_post['text']
-				post['quotedDate'] = date
-
-	# Process replies
-	for post in posts:
-		if 'reply' in post and 'parent' in post['reply']:
-			parent_rkey = post['reply']['parent']['uri'].split('/')[-1]
-			if parent_rkey in posts_by_rkey:
-				posts_by_rkey[parent_rkey]['replies'].append(post)
-			else:
-				post['external_reply'] = 1
-
-	# Filter out posts that should not appear anywhere
-	filtered_posts = []
-	for post in posts:
-		# Skip external replies that only contain quoted text and no original content
-		if (post.get('external_reply') and 'quotedText' in post and not post['text'].strip()):
-			continue
-		filtered_posts.append(post)
-
-	# Now track quoted posts that actually appear in filtered posts
-	quoted_posts = set()
-	for post in filtered_posts:
-		if 'quotedText' in post:
-			quoted_rkey = None
-			if 'embed' in post and post['embed']['$type'] == "app.bsky.embed.record":
-				quoted_rkey = post['embed']['record']['uri'].split('/')[-1]
-			elif 'embed' in post and post['embed']['$type'] == "app.bsky.embed.recordWithMedia":
-				quoted_rkey = post['embed']['record']['record']['uri'].split('/')[-1]
-			if quoted_rkey and quoted_rkey in posts_by_rkey:
-				quoted_posts.add(quoted_rkey)
-
-	# Root posts are those that aren't replies to internal posts
-	# Also exclude posts that are quoted elsewhere but have no replies (to avoid duplication)
-	root_posts = [
-		post for post in filtered_posts
-		if not ('reply' in post and 'parent' in post['reply'] 
-			and post['reply']['parent']['uri'].split('/')[-1] in posts_by_rkey)
-		and not (post['rkey'] in quoted_posts and len(post['replies']) == 0)
+	# Roots, chronological: not a reply to a held post, minus solo posts whose whole
+	# text already appears inline wherever they are quoted (the dedup).
+	return [
+		p for p in survivors
+		if not ((parent := parent_rkey(p)) and parent in by_rkey)
+		and not (p["rkey"] in quoted_anywhere and not p["replies"])
 	]
-	return root_posts
 
-def print_posts(posts):
-	last_root_date = [None]	# Tracks the date of the last root post
 
-	def print_date_if_new(date):
-		# Print the date only if it's different from the last root post's date
-		if date != last_root_date[0]:
-			print()
-			print("## " + date)
-			last_root_date[0] = date
+def print_posts(roots):
+	last_date = None
 
-	def print_post(post, depth=0):
-		date = post['createdAt'].split('T')[0]
-		indent = ' ↳ ' * depth	# Adjust indent for replies
-
+	def print_post(post, depth):
+		nonlocal last_date
+		date = post["createdAt"].split("T")[0]
 		print()
-		if depth == 0 or post.get('external_reply'):
+		if depth == 0:
 			print()
-		if depth == 0:	# It's a root post
-			print_date_if_new(date)
-		print(f"{indent}{post['text']}", end="")
-		if depth != 0 and not post.get('external_reply'):
+			if date != last_date:
+				print()
+				print("## " + date)
+				last_date = date
+		# A reply into someone else's thread stands alone with an explicit marker --
+		# never drawn as a child of the unrelated post that precedes it.
+		lead = "↳ elsewhere: " if post.get("external_reply") else " ↳ " * depth
+		print(f"{lead}{post['text']}", end="")
+		if depth:
 			print(f" —{date}", end="")
-		if 'quotedText' in post:
-			quote_lines = post['quotedText'].split('\n')
-			quote_indent = ' ' * len(indent)
-			for line in quote_lines:
-				print(f"\n{quote_indent}> {line}", end="")
-			print(f" —{post['quotedDate']}", end="")
-
-		for reply in post['replies']:
+		for q in post["quoted"]:
+			for line in q["text"].split("\n"):
+				print(f"\n{'   ' * depth}> {line}", end="")
+			print(f" —{q['createdAt'].split('T')[0]}", end="")
+		for reply in post["replies"]:
 			print_post(reply, depth + 1)
 
-	for post in posts:
-		print_post(post, post.get('external_reply', 0))
+	for post in roots:
+		print_post(post, 0)
 
-directory = sys.argv[1]
-limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
-posts = read_posts_from_directory(os.path.join(directory, "app.bsky.feed.post"), limit)
 
-root_posts = process_posts(posts)
+def main():
+	directory = sys.argv[1]
+	limit = int(sys.argv[2]) if len(sys.argv) > 2 else None
+	posts = read_posts(directory)
+	if limit:
+		posts = posts[-limit:]
+	roots = process_posts(posts)
 
-profile_path = os.path.join(directory, "app.bsky.actor.profile", "self.json")
-profile = read_json(profile_path)
+	with open(os.path.join(directory, "app.bsky.actor.profile", "self.json"), encoding="utf-8") as fh:
+		profile = json.load(fh)
+	print(profile["displayName"])
+	print()
+	print(profile["description"])
+	print_posts(roots)
 
-print(profile['displayName'])
-print()
-print(profile['description'])
 
-print_posts(root_posts)
+if __name__ == "__main__":
+	main()

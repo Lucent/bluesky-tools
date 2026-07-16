@@ -12,9 +12,9 @@
 	// saved choice we leave color-scheme:light dark (set in CSS), which follows the OS.
 	{ const t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.style.colorScheme = t; }
 </script>
-<!-- flexforest default stylesheet: the view's motion + structure (transitions, enter/leave,
-     fold-tag cursor, camera surface). Linked first so the rules below can override colours
-     and retune the --ff-* timing custom properties. -->
+<!-- flexforest default stylesheet: the view's motion + structure (transitions, presence
+     fades, camera glide, fold-tag cursor). Linked first so the rules below can override
+     colours and retune the --ff-* timing custom properties. -->
 <link rel="stylesheet" href="flexforest/flexforest.css">
 <style>
 	:root {
@@ -84,19 +84,22 @@
 		transition: padding .3s ease, border-right-width .3s ease, box-shadow .3s ease;
 	}
 	aside h3 { margin: 0.2em 0 0.5em; font-size: 0.8em; color: GrayText; text-transform: uppercase; letter-spacing: 0.05em; }
-	aside ul { list-style: none; margin: 0; padding: 0; position: relative; }
+	aside ul { list-style: none; margin: 0; padding: 0; }
 	aside li { padding: 0.4em 0.3em; cursor: pointer; border-bottom: 1px solid var(--faint); color: CanvasText; overflow-wrap: anywhere; }
 	aside li:hover { background: var(--faint); }
 	/* Rows in the same tree as the hovered row: a saturated translucent overlay
 	   (mixed with transparent, not Canvas, so it shows in dark mode too) plus a
 	   bold bar down the side. */
 	aside li.kin { background: color-mix(in srgb, var(--kin) 20%, transparent); box-shadow: inset 3px 0 0 var(--kin); }
+	/* The enclosing box over a 2+ run, drawn by the cascade from the run's own edges (rows
+	   are clustered by tree, so a group is contiguous; JS only sets .kin): every row in a
+	   run draws the side walls (the 3px bar doubles as the left one), the first adds the
+	   top edge, the last the bottom — inset shadows, so nothing shifts and .active keeps
+	   its background. A lone .kin row keeps just the tint; plain hover already covers it. */
+	aside li.kin:has(+ li.kin), aside li.kin + li.kin { box-shadow: inset 3px 0 0 var(--kin), inset -2px 0 0 var(--kin); }
+	aside li.kin:not(li.kin + li.kin):has(+ li.kin) { box-shadow: inset 3px 0 0 var(--kin), inset -2px 0 0 var(--kin), inset 0 2px 0 var(--kin); border-radius: 5px 5px 0 0; }
+	aside li.kin + li.kin:not(:has(+ li.kin)) { box-shadow: inset 3px 0 0 var(--kin), inset -2px 0 0 var(--kin), inset 0 -2px 0 var(--kin); border-radius: 0 0 5px 5px; }
 	aside li.active { background: color-mix(in srgb, AccentColor 30%, Canvas); }
-	/* Box drawn over the run of those rows, reinforcing them as one group. */
-	#kinbox { position: absolute; left: 0; right: 0; display: none; pointer-events: none;
-		box-sizing: border-box;   /* without this, left/right:0 sizes the content box and the 2px border overflows the column */
-		border: 2px solid var(--kin); border-radius: 5px;
-		background: color-mix(in srgb, var(--kin) 14%, transparent); }
 	aside li small { display: block; color: GrayText; }
 	/* search match: the same yellow the graph rings matches with */
 	aside mark { background: color-mix(in srgb, var(--hit) 30%, transparent); color: inherit; border-radius: 2px; }
@@ -126,11 +129,11 @@
 
 	/* A post is an HTML card inside a <foreignObject>: the browser wraps the text and
 	   lays out the media. The SVG rect behind it draws the border/fill, so the card is
-	   transparent. One offscreen copy (.measure) is sized to read each post's height. */
+	   transparent. The view's offscreen measurer wears this same class, so measurement
+	   sees identical styling. */
 	.post { width: 240px; box-sizing: border-box; padding: 8px 11px; background: transparent;
 		font-family: inherit; font-size: 12px; line-height: 1.36; color: CanvasText; cursor: default;
 		overflow-wrap: anywhere; }
-	.post.measure { position: absolute; left: -9999px; top: 0; visibility: hidden; }
 	.node.quote:not(.tweet) .post { cursor: pointer; }   /* a satellite click loads its own graph */
 	.post header { display: flex; gap: 5px; align-items: center;
 		font-size: 0.83em; color: GrayText; margin-bottom: 3px; }
@@ -176,13 +179,12 @@
 		cursor: pointer; color: inherit; transition: color .15s; }
 	.post .copy:hover { color: LinkText; }
 	.post .copy svg { display: block; width: 100%; height: 100%; }
-	/* .ctoggle cursor lives in flexforest.css; colours stay here. */
-	.ctoggle .ctbg { fill: Canvas; stroke: var(--edge); stroke-width: 1.2; }
-	.ctoggle:hover .ctbg { stroke: AccentColor; }
-	.ctoggle .ctlbl { fill: GrayText; font-size: 11px; }
+	/* .ctoggle structure (pill, centring, tail) lives in flexforest.css; colours + font here. */
+	.ctoggle { background: Canvas; border-color: var(--edge); color: GrayText; font-size: 11px; }
+	.ctoggle:hover { border-color: AccentColor; }
 	/* the canvas shows a grab cursor; stop it at the node so content is default and
 	   links/satellites pick their own (handled above). Motion — the transform/opacity
-	   transitions and the .enter/.leave resting state — lives in flexforest.css. */
+	   transitions, the @starting-style entry, the .leave exit — lives in flexforest.css. */
 	.node { cursor: auto; }
 
 	.edge { fill: none; stroke: var(--edge); stroke-width: 1.4; }
@@ -392,8 +394,9 @@ async function load() {
 	buildSidebar();
 	const dates = Object.values(INDEX).map(e => e.d).filter(Boolean);
 	const latest = dates.length ? dates.reduce((a, b) => a > b ? a : b).slice(0, 10) : "";
-	$("#status").innerHTML = data ? `${Object.keys(INDEX).length} posts loaded.` + (latest ? `<br>Up to ${latest}` : "")
-		: bootIsExternal() ? "" : "No archive — paste a post URL above.";
+	const st = $("#status");
+	if (data) st.replaceChildren(`${Object.keys(INDEX).length} posts loaded.`, ...(latest ? [el("br", {}), `Up to ${latest}`] : []));
+	else st.textContent = bootIsExternal() ? "" : "No archive — paste a post URL above.";
 	FOCUS = null; PINS = []; lastPinsKey = null;   // force the first navigate to fully render (and replace, not push)
 	showHash(true);                                // restore a shared/bookmarked (possibly merged) view, fetching outside threads it names
 }
@@ -503,13 +506,10 @@ function heading(text) {
 
 function buildSidebar() {
 	const sb = $("#sidebar");
-	sb.innerHTML = "";
-	kinGroup = null;                            // the boxed group is gone with the old rows
+	sb.replaceChildren();
+	kinGroup = null;                            // the highlighted group is gone with the old rows
 	const q = $("#q").value.trim().toLowerCase();
 	const ul = document.createElement("ul");
-	const kinbox = document.createElement("div");   // hover box drawn over a same-tree run
-	kinbox.id = "kinbox";
-	ul.append(kinbox);                          // positioned, so it paints over the rows
 
 	if (q) {                                    // search: list the matching posts themselves
 		const hits = [];
@@ -552,42 +552,57 @@ function searchText(e) {
 	return s.toLowerCase();
 }
 
-// ---------- post content (HTML) ----------
+// ---------- post content (DOM) ----------
 // A post is an HTML card inside a <foreignObject>: the browser wraps the text, lays
-// out the images/card/video, and we measure the height for the tidy-tree packing.
-const esc = (s) => s.replace(/[&<>"]/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;"}[c]));
+// out the images/card/video, and the view measures the height for the tidy-tree packing.
+// Cards are built node by node -- el() sets attributes and appends children (strings
+// become text nodes) -- so there is no markup string and nothing to escape.
+const el = (tag, attrs, ...kids) => {
+	const n = document.createElement(tag);
+	for (const k in attrs) if (attrs[k] != null) n.setAttribute(k, attrs[k]);
+	n.append(...kids);
+	return n;
+};
+const svgUse = (icon) => {   // footer glyph referencing the shared <symbol> defs
+	const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+	s.setAttribute("viewBox", "0 0 24 24");
+	const u = document.createElementNS("http://www.w3.org/2000/svg", "use");
+	u.setAttribute("href", "#" + icon);
+	s.append(u);
+	return s;
+};
 const domain = (u) => { try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; } };
-// "3:14pm" (local) from an ISO timestamp; "" if unparseable.
+// Local time from an ISO timestamp, in the reader's own locale and clock convention.
 const timeStr = (iso) => {
 	const dt = new Date(iso);
-	if (isNaN(dt)) return "";
-	const h = dt.getHours();
-	return `${h % 12 || 12}:${String(dt.getMinutes()).padStart(2, "0")}${h < 12 ? "am" : "pm"}`;
+	return isNaN(dt) ? "" : dt.toLocaleTimeString([], {hour: "numeric", minute: "2-digit"});
 };
 
-// Post body as HTML, styling the byte-offset facets (links / mentions / tags) inline.
-function bodyHTML(e) {
+// Post body as a child list, styling the byte-offset facets (links / mentions / tags)
+// inline; plain runs stay strings.
+function bodyContent(e) {
 	const txt = e.t || "";
 	if (!txt.trim()) {
-		if (e.ext && e.ext.u || e.img || e.vid) return "";   // the media carries it
-		return `<span class="dim">(no text)</span>`;
+		if (e.ext && e.ext.u || e.img || e.vid) return [];   // the media carries it
+		return [el("span", {class: "dim"}, "(no text)")];
 	}
-	if (!e.f || !e.f.length) return esc(txt);
+	if (!e.f || !e.f.length) return [txt];
 	const enc = new TextEncoder(), dec = new TextDecoder(), bytes = enc.encode(txt);
 	const facets = [...e.f].sort((a, b) => a.index.byteStart - b.index.byteStart);
-	let out = "", cursor = 0;
+	const out = [];
+	let cursor = 0;
 	for (const f of facets) {
 		const start = f.index.byteStart, end = f.index.byteEnd;
 		if (start < cursor) continue;
-		if (start > cursor) out += esc(dec.decode(bytes.slice(cursor, start)));
-		const inner = esc(dec.decode(bytes.slice(start, end))), feat = f.features[0];
-		if (feat.$type === "app.bsky.richtext.facet#link") out += `<a class="lnk" href="${esc(feat.uri)}" title="${esc(feat.uri)}">${inner}</a>`;
-		else if (feat.$type === "app.bsky.richtext.facet#mention") out += `<a class="men" href="https://bsky.app/profile/${esc(feat.did)}">${inner}</a>`;
-		else if (feat.$type === "app.bsky.richtext.facet#tag") out += `<span class="tag">${inner}</span>`;
-		else out += inner;
+		if (start > cursor) out.push(dec.decode(bytes.slice(cursor, start)));
+		const inner = dec.decode(bytes.slice(start, end)), feat = f.features[0];
+		if (feat.$type === "app.bsky.richtext.facet#link") out.push(el("a", {class: "lnk", href: feat.uri, title: feat.uri}, inner));
+		else if (feat.$type === "app.bsky.richtext.facet#mention") out.push(el("a", {class: "men", href: `https://bsky.app/profile/${feat.did}`}, inner));
+		else if (feat.$type === "app.bsky.richtext.facet#tag") out.push(el("span", {class: "tag"}, inner));
+		else out.push(inner);
 		cursor = end;
 	}
-	if (cursor < bytes.length) out += esc(dec.decode(bytes.slice(cursor)));
+	if (cursor < bytes.length) out.push(dec.decode(bytes.slice(cursor)));
 	return out;
 }
 
@@ -601,50 +616,59 @@ function authorOf(rk) {
 		desc: e.desc || "", avatar: e.avatar || "", url: e.did ? `https://bsky.app/profile/${e.did}` : ""};
 }
 
-// Full post content (header + body + images + link card + video + tweet chip) as HTML.
-function postHTML(rkey, badge) {
+// The finished post card (header + body + images + link card + video + tweet chip +
+// footer) as a DOM element. Media images lazy-load with async decode; their boxes are
+// sized up front (aspect-ratio / fixed heights), so a late image never reflows the pack.
+function buildPost(rkey, badge) {
 	const e = INDEX[rkey];
 	const a = authorOf(rkey);
 	const dstr = (e.d || "").slice(0, 10);
-	let h = "<header>";
-	if (a.avatar) h += `<img class="avatar" src="${esc(a.avatar)}" alt="">`;
+	const post = el("div", {class: "post"});
+	const head = el("header", {});
+	if (a.avatar) head.append(el("img", {class: "avatar", src: a.avatar, alt: "", loading: "lazy", decoding: "async"}));
 	// the name links to the author's profile (a tweet links out to X)
-	if (badge) h += a.url ? `<a class="badge" href="${esc(a.url)}">${esc(badge)}</a>` : `<span class="badge">${esc(badge)}</span>`;
+	if (badge) head.append(a.url ? el("a", {class: "badge", href: a.url}, badge) : el("span", {class: "badge"}, badge));
 	const when = dstr + (timeStr(e.d) ? " · " + timeStr(e.d) : "");
-	if (dstr && !e.tweet) h += `<a class="date" href="https://bsky.app/profile/${a.did}/post/${rkey}">${when}</a>`;
-	else if (dstr) h += `<span class="date">${when}</span>`;
-	h += `</header><div class="body">${bodyHTML(e)}</div>`;
-	if (e.img) for (const im of e.img) {
-		const ar = im.ar ? ` style="aspect-ratio:${im.ar[0]}/${im.ar[1]};height:auto"` : "";   // size the box to the image
-		h += `<img class="media"${ar} src="${esc(im.u)}"${im.a ? ` alt="${esc(im.a)}" title="${esc(im.a)}"` : ""}>`;
-	}
+	if (dstr && !e.tweet) head.append(el("a", {class: "date", href: `https://bsky.app/profile/${a.did}/post/${rkey}`}, when));
+	else if (dstr) head.append(el("span", {class: "date"}, when));
+	post.append(head, el("div", {class: "body"}, ...bodyContent(e)));
+	if (e.img) for (const im of e.img)
+		post.append(el("img", {class: "media", src: im.u, loading: "lazy", decoding: "async",
+			style: im.ar ? `aspect-ratio:${im.ar[0]}/${im.ar[1]};height:auto` : null,   // size the box to the image
+			alt: im.a || null, title: im.a || null}));
 	if (e.ext && e.ext.u && !e.tweet) {
 		const t = (e.ext.t || "").trim(), d = (e.ext.d || "").trim();
-		h += `<a class="card" href="${esc(e.ext.u)}" title="${esc(e.ext.u)}">`;
-		if (e.ext.thumb) h += `<img class="cardthumb" src="${esc(e.ext.thumb)}" alt="">`;
-		h += `<span class="cardtext">${t ? `<b>${esc(t)}</b>` : ""}${d ? `<i>${esc(d)}</i>` : ""}<small>${esc(domain(e.ext.u))}</small></span></a>`;
+		const text = el("span", {class: "cardtext"});
+		if (t) text.append(el("b", {}, t));
+		if (d) text.append(el("i", {}, d));
+		text.append(el("small", {}, domain(e.ext.u)));
+		const card = el("a", {class: "card", href: e.ext.u, title: e.ext.u});
+		if (e.ext.thumb) card.append(el("img", {class: "cardthumb", src: e.ext.thumb, alt: "", loading: "lazy", decoding: "async"}));
+		card.append(text);
+		post.append(card);
 	}
-	if (e.vid) {
-		const ar = e.vid.ar ? ` style="aspect-ratio:${e.vid.ar[0]}/${e.vid.ar[1]}"` : "";   // size the box like images; 16/9 fallback in CSS
-		const alt = e.vid.a ? ` aria-label="${esc(e.vid.a)}" title="${esc(e.vid.a)}"` : "";   // alt for the poster; gone once it plays
-		const poster = e.poster ? ` poster="${esc(e.poster)}"` : "";
-		h += `<video class="media"${ar}${alt}${poster} controls preload="none" src="${esc(e.playlist || "")}"></video>`;
-	}
-	if (e.tweet && e.u) h += `<a class="clink" href="${esc(e.u)}">↗ ${esc(domain(e.u))}</a>`;
+	if (e.vid)
+		post.append(el("video", {class: "media", controls: "", preload: "none", src: e.playlist || "",
+			style: e.vid.ar ? `aspect-ratio:${e.vid.ar[0]}/${e.vid.ar[1]}` : null,   // size the box like images; 16/9 fallback in CSS
+			"aria-label": e.vid.a || null, title: e.vid.a || null,                   // alt for the poster; gone once it plays
+			poster: e.poster || null}));
+	if (e.tweet && e.u) post.append(el("a", {class: "clink", href: e.u}, "↗ " + domain(e.u)));
 	// One footer row. The reply glyph is an action link to bsky.app (its post page puts the
 	// reply composer one click away — bsky has no documented reply-intent URL), so it appears
 	// on every bsky post regardless of source. Repost/like are count-only, shown when the
 	// post came from the API. The count number itself is hidden when zero.
 	const copyText = e.tweet ? (e.a || "") : (e.t || "");
 	const bits = [];
-	if (e.did && !e.tweet) bits.push(`<a class="reply" title="Reply" href="https://bsky.app/profile/${esc(e.did)}/post/${rkey}"><svg viewBox="0 0 24 24"><use href="#reply-icon"/></svg>${fmtCount(e.rc || 0)}</a>`);
+	if (e.did && !e.tweet) bits.push(el("a", {class: "reply", title: "Reply",
+		href: `https://bsky.app/profile/${e.did}/post/${rkey}`}, svgUse("reply-icon"), fmtCount(e.rc || 0)));
 	if (typeof e.rc === "number") {
-		bits.push(`<span title="Reposts"><svg viewBox="0 0 24 24"><use href="#repost-icon"/></svg>${fmtCount(e.rp || 0)}</span>`);
-		bits.push(`<span title="Likes"><svg viewBox="0 0 24 24"><use href="#like-icon"/></svg>${fmtCount(e.lk || 0)}</span>`);
+		bits.push(el("span", {title: "Reposts"}, svgUse("repost-icon"), fmtCount(e.rp || 0)));
+		bits.push(el("span", {title: "Likes"}, svgUse("like-icon"), fmtCount(e.lk || 0)));
 	}
-	if (copyText) bits.push(`<button class="copy" type="button" data-copy="${esc(copyText)}" aria-label="Copy post text" title="Copy post text"><svg viewBox="0 0 24 24"><use href="#copy-icon"/></svg></button>`);
-	if (bits.length) h += `<footer>${bits.join("")}</footer>`;
-	return h;
+	if (copyText) bits.push(el("button", {class: "copy", type: "button", "data-copy": copyText,
+		"aria-label": "Copy post text", title: "Copy post text"}, svgUse("copy-icon")));
+	if (bits.length) post.append(el("footer", {}, ...bits));
+	return post;
 }
 
 // k/M abbreviation matches the bsky.app post controls; 0 renders as the glyph alone.
@@ -654,7 +678,7 @@ const fmtCount = (n) => !n ? ""
 	: String(n);
 
 // Measurement and SVG node/edge drawing moved into flexforest-view; the page only supplies
-// each card's finished content (postHTML) and a class string via renderNode.
+// each card's builder (buildPost) and a class string via renderNode.
 
 // Who wrote a post: a fetched post carries its author DID; an archive post is the
 // account whose repo we loaded (DID). Used to colour posts by author, not by account.
@@ -684,9 +708,10 @@ function nodeClass(rk) {
 	return cls;
 }
 
-// Everything the view needs to draw + measure one node: finished card content, its wrapper
-// class (so the measurer styles it identically), the node class, a content cache key, the
-// double-box flag (a grafted quote-reply shortcut), and the fold-tag labels.
+// Everything the view needs to draw + measure one node: the card builder (called once per
+// card life — the element is measured offscreen, then adopted into the node), the node
+// class, a content cache key, the double-box flag (a grafted quote-reply shortcut), and
+// the fold-tag labels.
 function renderNode(rk) {
 	const e = INDEX[rk], m = currentView.meta[rk];
 	let downFold, upFold;
@@ -694,7 +719,7 @@ function renderNode(rk) {
 		if (children[rk].length) downFold = COLLAPSED.has(rk) ? String(descendantCount(rk)) : "–";
 		if (e.p && INDEX[e.p]) upFold = UPCOLLAPSED.has(rk) ? String(descendantCount(localRoot(rk)) - descendantCount(rk)) : "–";
 	}
-	return {content: postHTML(rk, m.badge), wrapClass: "post", className: nodeClass(rk),
+	return {content: () => buildPost(rk, m.badge), className: nodeClass(rk),
 		contentKey: `${rk} ${m.badge}`, dbl: m.graft, downFold, upFold};
 }
 
@@ -1222,28 +1247,17 @@ $("#q").addEventListener("input", () => {
 	searchTimer = setTimeout(() => { buildSidebar(); view.refresh(); }, 700);   // refresh re-rings graph matches
 });
 
-// Hovering a sidebar row draws a box around the run of rows in the same tree.
-// Results are clustered by tree, so the run is contiguous; we just span from the
-// first matching row's top to the last's bottom. Only shown for 2+ rows (a lone
-// match needs no box — plain :hover covers it). Delegated so it survives rebuilds;
-// kinGroup guards against recomputing on every mousemove within a row.
+// Hovering a sidebar row highlights the run of rows in the same tree: JS tags each one
+// .kin and the cascade draws the group box from the run's own edges (results are
+// clustered by tree, so the run is contiguous — see the aside li.kin rules). Delegated
+// so it survives rebuilds; kinGroup guards against recomputing on every mousemove
+// within a row.
 let kinGroup = null;
 const setKin = (group) => {
 	if (group === kinGroup) return;
 	kinGroup = group;
-	// Tint every row of the hovered group (reliable, no positioning math)…
-	const all = $("#sidebar").querySelectorAll("li[data-group]");
-	all.forEach(li => li.classList.toggle("kin", group != null && li.dataset.group === group));
-	// …and draw the enclosing box over the run when it's a real group (2+ rows).
-	const box = $("#kinbox");
-	if (!box) return;
-	const rows = group == null ? [] : [...all].filter(li => li.dataset.group === group);
-	if (rows.length < 2) { box.style.display = "none"; return; }
-	let top = Infinity, bot = -Infinity;
-	for (const r of rows) { top = Math.min(top, r.offsetTop); bot = Math.max(bot, r.offsetTop + r.offsetHeight); }
-	box.style.top = top + "px";
-	box.style.height = (bot - top) + "px";
-	box.style.display = "block";
+	$("#sidebar").querySelectorAll("li[data-group]").forEach(li =>
+		li.classList.toggle("kin", group != null && li.dataset.group === group));
 };
 $("#sidebar").addEventListener("mouseover", (e) => {
 	const li = e.target.closest("li[data-group]");
